@@ -1,0 +1,280 @@
+rules_version = '2';
+
+// Тармақ — правила безопасности Cloud Firestore.
+// Консоль Firebase → Firestore Database → вкладка «Правила» (Rules) → вставить файл целиком → «Опубликовать».
+//
+// Коллекции:
+//   users_public/{uid}    имя, @handle, роль, группа, аватар, баллы — читают все вошедшие
+//   users_private/{uid}   email, телефон, список заявок — только владелец и admin
+//   rate/{uid}            время последней публикации (антиспам) — только владелец
+//   counters/posts        { last } — сквозная нумерация заявок #0001…
+//   posts/{id}            посты, ветки, репосты, заявки; posts/{id}/votes/{uid} — голоса
+//   posts_owner/{id}      автор анонимного поста — только сам автор (даже admin не видит)
+//   comments/{id}         ветки комментариев
+//   notifications/{id}    уведомления — только получатель
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ───────── общие функции ─────────
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function db() { return /databases/$(database)/documents; }
+    function pub(id) { return /databases/$(database)/documents/users_public/$(id); }
+    function priv(id) { return /databases/$(database)/documents/users_private/$(id); }
+    function rateDoc(id) { return /databases/$(database)/documents/rate/$(id); }
+    function postDoc(id) { return /databases/$(database)/documents/posts/$(id); }
+    function ownerDoc(id) { return /databases/$(database)/documents/posts_owner/$(id); }
+    function voteDoc(postId, id) { return /databases/$(database)/documents/posts/$(postId)/votes/$(id); }
+    function commentDoc(id) { return /databases/$(database)/documents/comments/$(id); }
+    function hasProfile() { return signedIn() && exists(pub(uid())); }
+    function myRole() { return get(pub(uid())).data.role; }
+    function isAdmin() { return hasProfile() && myRole() == 'admin'; }
+    function data() { return request.resource.data; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function onlyChanged(keys) { return changed().hasOnly(keys); }
+
+    // список изменился ровно на свой uid (лайк / репост / «Растау»)
+    function selfToggle(after, before) {
+      return after is list && after.size() <= 5000
+        && after.toSet().difference(before.toSet()).hasOnly([uid()])
+        && before.toSet().difference(after.toSet()).hasOnly([uid()]);
+    }
+    // антиспам: в том же batch обновлено rate/{uid}.lastAt = request.time (не чаще 1 раза в 10 с)
+    function rateOk() { return getAfter(rateDoc(uid())).data.lastAt == request.time; }
+
+    function validName(n) { return n is string && n.size() >= 2 && n.size() <= 60; }
+    function validPhone(p) { return p is string && p.matches('^\\+7 \\(7[0-9]{2}\\) [0-9]{3}-[0-9]{2}-[0-9]{2}$'); }
+    function driveUrl(u) { return u is string && u.matches('^https://drive\\.google\\.com/thumbnail\\?id=[A-Za-z0-9_-]+&sz=w[0-9]+$'); }
+    function validImages(l) {
+      return l is list && l.size() <= 4
+        && (l.size() < 1 || driveUrl(l[0])) && (l.size() < 2 || driveUrl(l[1]))
+        && (l.size() < 3 || driveUrl(l[2])) && (l.size() < 4 || driveUrl(l[3]));
+    }
+
+    // ───────── пользователи ─────────
+    match /users_public/{userId} {
+      allow read: if signedIn();
+      // создаётся при обязательной регистрации вместе с users_private (одним batch)
+      allow create: if signedIn() && userId == uid()
+        && data().keys().hasOnly(['name', 'handle', 'role', 'group', 'avatar', 'hue', 'points', 'verified', 'following', 'createdAt'])
+        && validName(data().name)
+        && data().handle is string && data().handle.matches('^[a-z0-9_.]{3,30}$')
+        && data().role in ['student', 'teacher']          // admin назначает только другой admin (или консоль)
+        && data().verified == false                         // преподавателя подтверждает администрация
+        && data().points == 0 && data().following == []
+        && data().group is string && data().group.size() >= 2 && data().group.size() <= 40
+        && data().avatar is string && data().avatar.size() <= 500
+        && data().hue is int
+        && data().createdAt == request.time
+        && existsAfter(priv(userId));
+      allow update: if
+        // владелец: имя, группа, аватар, подписки, +1 балл за публикацию (только вместе с антиспам-отметкой)
+        (signedIn() && userId == uid()
+          && onlyChanged(['name', 'group', 'avatar', 'following', 'points'])
+          && validName(data().name) && data().group is string && data().group.size() <= 40
+          && data().following is list && data().following.size() <= 1000
+          && (data().points == resource.data.points || (data().points == resource.data.points + 1 && rateOk())))
+        // администрация: роль, подтверждение преподавателя, баллы
+        || (isAdmin() && onlyChanged(['role', 'verified', 'points'])
+          && data().role in ['student', 'teacher', 'admin'] && data().verified is bool && data().points is int);
+      allow delete: if false;
+    }
+
+    match /users_private/{userId} {
+      allow read: if signedIn() && (userId == uid() || isAdmin());
+      allow create: if signedIn() && userId == uid()
+        && data().keys().hasOnly(['email', 'phone', 'tickets', 'createdAt'])
+        && data().email == request.auth.token.email
+        && validPhone(data().phone)
+        && data().tickets == []
+        && data().createdAt == request.time;
+      allow update: if signedIn() && userId == uid()
+        && onlyChanged(['phone', 'tickets'])
+        && validPhone(data().phone)
+        && data().tickets is list && data().tickets.size() <= 1000;
+      allow delete: if false;
+    }
+
+    match /rate/{userId} {
+      allow read: if signedIn() && userId == uid();
+      allow create: if signedIn() && userId == uid() && data().keys().hasOnly(['lastAt']) && data().lastAt == request.time;
+      allow update: if signedIn() && userId == uid() && data().keys().hasOnly(['lastAt'])
+        && data().lastAt == request.time
+        && request.time > resource.data.lastAt + duration.value(10, 's');
+    }
+
+    // ───────── сквозная нумерация заявок ─────────
+    match /counters/{name} {
+      allow read: if signedIn();
+      allow create: if name == 'posts' && hasProfile() && data().keys().hasOnly(['last']) && data().last == 1;
+      allow update: if name == 'posts' && hasProfile() && data().keys().hasOnly(['last']) && data().last == resource.data.last + 1;
+    }
+
+    // ───────── посты, ветки, заявки ─────────
+    function counter() { return /databases/$(database)/documents/counters/posts; }
+    function validNewTicket(d) {
+      let t = d.ticket;
+      return t is map
+        && t.keys().hasOnly(['num', 'category', 'building', 'floor', 'room', 'roomKey', 'status', 'deadline', 'resolvedAt', 'confirmedBy', 'official', 'afterImages'])
+        && t.status == (d.type == 'lost' ? 'searching' : 'accepted')
+        && t.deadline == null && t.resolvedAt == null && t.official == null
+        && t.confirmedBy == [] && t.afterImages == []
+        && (d.type == 'complaint' ? t.category in ['cleaning', 'furniture', 'heat', 'wc', 'canteen'] : t.category == d.type)
+        && t.building in ['main', 'b2', 'dorm', 'gym']
+        && t.floor is string && t.floor.size() <= 4
+        && t.room is string && t.room.size() <= 30 && t.roomKey is string && t.roomKey.size() <= 30
+        // номер = предыдущий + 1, и счётчик обновлён в той же транзакции
+        && t.num is int
+        && t.num == (exists(counter()) ? get(counter()).data.last : 0) + 1
+        && getAfter(counter()).data.last == t.num;
+    }
+    function validPoll(p) {
+      return p == null || (p is map && p.keys().hasOnly(['options', 'counts'])
+        && p.options is list && p.options.size() >= 2 && p.options.size() <= 4
+        && p.counts is map && p.counts.size() == p.options.size()
+        && p.counts.values().toSet() == [0].toSet());
+    }
+    function validAuthor(postId, d) {
+      return (d.anon == false && d.authorId == uid())
+        // анонимно: в посте authorId = null, а настоящий автор лежит в posts_owner (видит только он сам)
+        || (d.anon == true && d.authorId == null && getAfter(ownerDoc(postId)).data.uid == uid());
+    }
+    function validContent(postId, d) {
+      return d.type in ['talk', 'idea', 'complaint', 'lost']
+        && d.text is string && d.text.size() <= 2000
+        && validImages(d.images)
+        && validAuthor(postId, d)
+        && rateOk()
+        && validPoll(d.poll)
+        && d.repostOf == null
+        && (d.quoteId == null || (d.quoteId is string && exists(postDoc(d.quoteId))))
+        && (d.chainOf == null
+              ? (d.chainIdx == 0 && (d.type == 'talk' ? d.ticket == null : validNewTicket(d)))
+              : (d.chainIdx is int && d.chainIdx > 0 && d.chainIdx < 10 && d.ticket == null
+                 && getAfter(postDoc(d.chainOf)).data.authorId == d.authorId
+                 && getAfter(postDoc(d.chainOf)).data.anon == d.anon));
+    }
+    function validRepost(d) {
+      return d.authorId == uid() && d.anon == false && d.text == '' && d.images == []
+        && d.poll == null && d.ticket == null && d.chainOf == null && d.chainIdx == 0 && d.quoteId == null
+        && d.repostOf is string && exists(postDoc(d.repostOf));
+    }
+
+    // голос в опросе: счётчики меняются ровно на ±1 и совпадают с документом votes/{uid}
+    function countOk(b, a, k, prev, next) {
+      return a[k] == b[k] + (string(next) == k ? 1 : 0) - (string(prev) == k ? 1 : 0);
+    }
+    function pollVote(postId) {
+      let b = resource.data.poll;
+      let a = request.resource.data.poll;
+      let v = voteDoc(postId, uid());
+      let prev = exists(v) ? get(v).data.option : -1;
+      let next = existsAfter(v) ? getAfter(v).data.option : -1;
+      return onlyChanged(['poll']) && b != null && a.options == b.options && a.counts.keys().toSet() == b.counts.keys().toSet()
+        && prev != next
+        && countOk(b.counts, a.counts, '0', prev, next) && countOk(b.counts, a.counts, '1', prev, next)
+        && (b.options.size() < 3 || countOk(b.counts, a.counts, '2', prev, next))
+        && (b.options.size() < 4 || countOk(b.counts, a.counts, '3', prev, next));
+    }
+    function ticketDiff() { return request.resource.data.ticket.diff(resource.data.ticket).affectedKeys(); }
+    function confirmToggle() {
+      return resource.data.type == 'complaint' && resource.data.ticket != null
+        && onlyChanged(['ticket']) && ticketDiff().hasOnly(['confirmedBy'])
+        && selfToggle(request.resource.data.ticket.confirmedBy, resource.data.ticket.confirmedBy);
+    }
+    // ТОЛЬКО admin: статус (Қабылданды / Қаралуда / Шешілді / Қабылданбады и статусы бюро находок),
+    // дедлайн SLA, официальный ответ, фото «После»
+    function adminTicket() {
+      let t = request.resource.data.ticket;
+      return isAdmin() && resource.data.ticket != null
+        && onlyChanged(['ticket'])
+        && ticketDiff().hasOnly(['status', 'deadline', 'resolvedAt', 'official', 'afterImages'])
+        && (resource.data.type == 'lost'
+              ? t.status in ['searching', 'found', 'returned']
+              : t.status in ['accepted', 'review', 'resolved', 'rejected'])
+        && (t.deadline == null || t.deadline is timestamp)
+        && (t.resolvedAt == null || t.resolvedAt is timestamp)
+        && (t.official == null || (t.official.keys().hasOnly(['text', 'by', 'at']) && t.official.by == uid()
+              && t.official.text is string && t.official.text.size() <= 1500))
+        && validImages(t.afterImages);
+    }
+    function ownsAnon(postId) {
+      return exists(ownerDoc(postId)) && get(ownerDoc(postId)).data.uid == uid();
+    }
+
+    match /posts/{postId} {
+      allow read: if signedIn();
+      allow create: if hasProfile()
+        && data().keys().hasOnly(['type', 'authorId', 'anon', 'text', 'images', 'quoteId', 'repostOf', 'chainOf', 'chainIdx', 'likedBy', 'repostedBy', 'replyCount', 'poll', 'ticket', 'createdAt'])
+        && data().keys().hasAll(['type', 'authorId', 'anon', 'text', 'images', 'quoteId', 'repostOf', 'chainOf', 'chainIdx', 'likedBy', 'repostedBy', 'replyCount', 'poll', 'ticket', 'createdAt'])
+        && data().replyCount == 0
+        && data().anon is bool
+        && data().createdAt == request.time
+        && data().likedBy == [] && data().repostedBy == []
+        && (data().type == 'repost' ? validRepost(data()) : validContent(postId, data()));
+      allow update: if hasProfile() && (
+           (onlyChanged(['likedBy']) && selfToggle(data().likedBy, resource.data.likedBy))
+        || (onlyChanged(['repostedBy']) && selfToggle(data().repostedBy, resource.data.repostedBy))
+        // счётчик ответов: +1 только вместе с комментарием (антиспам-отметка в том же batch)
+        || (onlyChanged(['replyCount']) && data().replyCount == resource.data.get('replyCount', 0) + 1 && rateOk())
+        || pollVote(postId)
+        || confirmToggle()
+        || adminTicket());
+      allow delete: if hasProfile() && (isAdmin() || resource.data.authorId == uid() || ownsAnon(postId));
+
+      match /votes/{voterId} {
+        allow read: if signedIn() && voterId == uid();
+        allow create, update: if hasProfile() && voterId == uid()
+          && data().keys().hasOnly(['option', 'uid']) && data().uid == uid()
+          && data().option is int && data().option >= 0
+          && data().option < get(postDoc(postId)).data.poll.options.size()
+          && getAfter(postDoc(postId)).data.poll != get(postDoc(postId)).data.poll;
+        allow delete: if hasProfile() && voterId == uid()
+          && getAfter(postDoc(postId)).data.poll != get(postDoc(postId)).data.poll;
+      }
+    }
+
+    // мои голоса одним запросом (collectionGroup)
+    match /{prefix=**}/votes/{voterId} {
+      allow read: if signedIn() && resource.data.uid == uid();
+    }
+
+    match /posts_owner/{postId} {
+      allow read: if signedIn() && resource.data.uid == uid();   // НЕ admin — анонимность настоящая
+      allow create: if signedIn() && data().keys().hasOnly(['uid']) && data().uid == uid()
+        && getAfter(postDoc(postId)).data.anon == true;
+      allow delete: if signedIn() && resource.data.uid == uid();
+    }
+
+    // ───────── комментарии ─────────
+    match /comments/{commentId} {
+      allow read: if signedIn();
+      allow create: if hasProfile()
+        && data().keys().hasOnly(['postId', 'parentId', 'authorId', 'text', 'likedBy', 'createdAt'])
+        && data().authorId == uid()
+        && data().text is string && data().text.size() >= 1 && data().text.size() <= 1000
+        && data().likedBy == [] && data().createdAt == request.time
+        && exists(postDoc(data().postId))
+        && (data().parentId == null || exists(commentDoc(data().parentId)))
+        && rateOk();
+      allow update: if hasProfile() && onlyChanged(['likedBy']) && selfToggle(data().likedBy, resource.data.likedBy);
+      allow delete: if hasProfile() && (resource.data.authorId == uid() || isAdmin());
+    }
+
+    // ───────── уведомления ─────────
+    match /notifications/{notifId} {
+      allow read: if signedIn() && resource.data.to == uid();
+      allow create: if hasProfile()
+        && data().keys().hasOnly(['to', 'type', 'fromId', 'postId', 'payload', 'read', 'createdAt'])
+        && data().to is string && data().to != uid() && exists(pub(data().to))
+        && data().type in ['like', 'reply', 'repost', 'quote', 'follow', 'status', 'official', 'ticket', 'confirm']
+        && (data().fromId == uid() || data().fromId == null)
+        && data().read == false && data().createdAt == request.time
+        && data().payload is map
+        && (!(data().type in ['status', 'official']) || isAdmin());
+      allow update: if signedIn() && resource.data.to == uid() && onlyChanged(['read']) && data().read == true;
+      allow delete: if signedIn() && resource.data.to == uid();
+    }
+  }
+}
