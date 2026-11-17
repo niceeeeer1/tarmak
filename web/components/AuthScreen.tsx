@@ -1,5 +1,5 @@
 'use client';
-import { createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup, signInWithRedirect } from 'firebase/auth';
+import { createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth';
 import { useState } from 'react';
 import { DEMO, DEMO_ACCOUNTS, DEMO_PASSWORD } from '@/lib/constants';
 import { auth, firebaseConfigured, googleProvider } from '@/lib/firebase';
@@ -41,9 +41,11 @@ export function AuthScreen() {
       await signInWithPopup(auth, googleProvider);
     } catch (e) {
       const code = (e as { code?: string }).code || '';
-      // iOS PWA (standalone) и блокировщики всплывающих окон → вход через redirect
-      if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment') await signInWithRedirect(auth, googleProvider);
-      else if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') setErr(t('authFail') + ': ' + errText(code));
+      if (code === 'auth/popup-blocked') {
+        setErr('Браузер заблокировал окно входа. Нажмите на значок блокировки в адресной строке справа, разрешите всплывающие окна и попробуйте снова.');
+      } else if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
+        setErr(t('authFail') + ': ' + errText(code));
+      }
     }
     setBusy(false);
   };
