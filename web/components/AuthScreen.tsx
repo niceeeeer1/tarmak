@@ -2,6 +2,7 @@
 import { createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth';
 import { useState } from 'react';
 import { DEMO, DEMO_ACCOUNTS, DEMO_PASSWORD } from '@/lib/constants';
+import { ensureDemoProfile } from '@/lib/db';
 import { auth, firebaseConfigured, googleProvider } from '@/lib/firebase';
 import type { TKey } from '@/lib/i18n';
 import { useApp } from '@/lib/store';
@@ -11,14 +12,47 @@ import { Logo } from './ui';
 
 const errText = (code: string) => code.replace('auth/', '').replace(/-/g, ' ');
 
-/** Демо-вход по ролям (виден только при NEXT_PUBLIC_DEMO_MODE=true). Аккаунты создаёт firebase/scripts/seed.mjs. */
+// «нет такого пользователя» в Firebase: старый код и новый (при включённой защите от перебора email)
+const NO_USER = ['auth/user-not-found', 'auth/invalid-credential', 'auth/invalid-login-credentials'];
+
+/**
+ * Демо-вход по ролям (виден только при NEXT_PUBLIC_DEMO_MODE=true).
+ * Первый клик: аккаунта нет → createUserWithEmailAndPassword + профиль с ролью (teacher сразу verified).
+ * Следующие клики: обычный вход. seed.mjs запускать не нужно.
+ */
 export function DemoRoleSwitch({ current }: { current?: Role }) {
-  const { t, act } = useApp();
+  const { t, act, demoBusy } = useApp();
   if (!DEMO) return null;
+  const login = async (r: Role) => {
+    if (DEMO_PASSWORD.length < 6) { act.toast(t('demoNoPassword')); return; }
+    const email = DEMO_ACCOUNTS[r];
+    act.setDemoBusy(true);
+    try {
+      let cred;
+      try {
+        cred = await signInWithEmailAndPassword(auth, email, DEMO_PASSWORD);
+      } catch (e) {
+        if (!NO_USER.includes((e as { code?: string }).code || '')) throw e;
+        try {
+          cred = await createUserWithEmailAndPassword(auth, email, DEMO_PASSWORD);
+        } catch (e2) {
+          // invalid-credential + email-already-in-use = аккаунт есть, но пароль другой
+          if ((e2 as { code?: string }).code === 'auth/email-already-in-use') { act.toast(t('demoWrongPw')); return; }
+          throw e2;
+        }
+      }
+      await ensureDemoProfile(cred.user, r);
+      act.toast(t('roleSet') + ' ' + t(('r_' + r) as TKey));
+    } catch (e) {
+      act.toast(t('authFail') + ': ' + errText((e as { code?: string }).code || String(e)));
+    } finally {
+      act.setDemoBusy(false);
+    }
+  };
   return (
-    <div className="seg">
+    <div className="seg" aria-busy={demoBusy}>
       {(Object.keys(DEMO_ACCOUNTS) as Role[]).map(r => (
-        <button key={r} className={current === r ? 'on' : ''} onClick={() => signInWithEmailAndPassword(auth, DEMO_ACCOUNTS[r], DEMO_PASSWORD).catch(e => act.toast(t('authFail') + ': ' + errText(e.code || '')))}>
+        <button key={r} className={current === r ? 'on' : ''} disabled={demoBusy} onClick={() => login(r)}>
           {t(('r_' + r) as TKey)}
         </button>
       ))}
@@ -41,8 +75,9 @@ export function AuthScreen() {
       await signInWithPopup(auth, googleProvider);
     } catch (e) {
       const code = (e as { code?: string }).code || '';
+      // Без отката на signInWithRedirect: редирект между firebaseapp.com и vercel.app теряет сессию
       if (code === 'auth/popup-blocked') {
-        setErr('Браузер заблокировал окно входа. Нажмите на значок блокировки в адресной строке справа, разрешите всплывающие окна и попробуйте снова.');
+        setErr(t('popupBlocked'));
       } else if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
         setErr(t('authFail') + ': ' + errText(code));
       }

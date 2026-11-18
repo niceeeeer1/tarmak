@@ -9,7 +9,7 @@ import {
   arrayRemove, arrayUnion, collection, deleteDoc, doc, getDoc, increment, runTransaction, serverTimestamp,
   Timestamp, updateDoc, writeBatch, addDoc, type DocumentData, type DocumentReference, type Transaction, type WriteBatch,
 } from 'firebase/firestore';
-import { SOLVED } from './constants';
+import { DEMO_PROFILES, SOLVED } from './constants';
 import { db } from './firebase';
 import type { Comment, Draft, Notif, NotifType, PollView, Post, PrivateProfile, Role, TicketStatus, User } from './types';
 import { roomKey } from './utils';
@@ -185,6 +185,42 @@ export async function addComment(uid: string, postId: string, parentId: string |
   b.update(doc(db, 'posts', postId), { replyCount: increment(1) });
   await b.commit();
   notify(notifyTo, 'reply', uid, postId);
+}
+
+/**
+ * Удаление ответа: документ comments/{id} и replyCount −1 в посте — одним batch.
+ * lastDeletedComment = id удаляемого комментария: по нему rules проверяют, что −1 не «пустой».
+ * Если поста уже нет или счётчик и так 0 (старые данные) — удаляется только комментарий.
+ */
+export async function deleteComment(c: Comment, postReplyCount: number | null) {
+  const b = writeBatch(db);
+  b.delete(doc(db, 'comments', c.id));
+  if (postReplyCount !== null && postReplyCount > 0) {
+    b.update(doc(db, 'posts', c.postId), { replyCount: increment(-1), lastDeletedComment: c.id });
+  }
+  await b.commit();
+}
+
+/**
+ * Демо-вход: создаёт (или чинит) профиль демо-аккаунта с нужной ролью без seed.mjs.
+ * Роли teacher (verified) и admin rules разрешают только для email из DEMO_ACCOUNTS.
+ */
+export async function ensureDemoProfile(user: AuthUser, role: Role) {
+  const p = DEMO_PROFILES[role];
+  const verified = role !== 'student';
+  const pubRef = doc(db, 'users_public', user.uid), privRef = doc(db, 'users_private', user.uid);
+  const [pub, priv] = await Promise.all([getDoc(pubRef), getDoc(privRef)]);
+  if (!pub.exists() || !priv.exists()) {
+    const b = writeBatch(db);
+    if (!pub.exists()) b.set(pubRef, {
+      name: p.name, handle: 'demo_' + role, role, group: p.group, avatar: '', hue: p.hue,
+      points: 0, verified, following: [], createdAt: serverTimestamp(),
+    });
+    if (!priv.exists()) b.set(privRef, { email: user.email, phone: p.phone, tickets: [], createdAt: serverTimestamp() });
+    await b.commit();
+  }
+  const d = pub.exists() ? pub.data() : null;
+  if (d && (d.role !== role || !!d.verified !== verified)) await updateDoc(pubRef, { role, verified });
 }
 
 export async function deletePost(p: Post, extraIds: string[]) {
