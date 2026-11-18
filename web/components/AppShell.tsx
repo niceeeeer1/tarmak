@@ -19,7 +19,7 @@ const QR_KEY = 'tarmak.qr';
 const BUILDINGS = ['main', 'b2', 'dorm', 'gym'];
 
 export function AppShell() {
-  const { authReady, authUser, privReady, profileDone, me, loaded, view, vkey, composer, setComposer, toast, t, go, posts, act } = useApp();
+  const { authReady, authUser, privReady, profileDone, demoBusy, me, loaded, view, vkey, composer, setComposer, toast, t, go, posts, act } = useApp();
   const handled = useRef(false);
 
   // QR-код локации: /?loc=204-каб&type=complaint&b=main&f=2 — запоминаем до входа, открываем после
@@ -52,6 +52,8 @@ export function AppShell() {
     return <div className="onb" style={{ alignItems: 'center' }}><Logo size={48} /><p>{t('loading')}</p></div>;
   }
   if (!authUser) return <div className="app"><AuthScreen />{toastEl}</div>;
+  // демо-вход сам создаёт профиль — не показываем форму регистрации, пока он пишется
+  if (!profileDone && demoBusy) return <div className="onb" style={{ alignItems: 'center' }}><Logo size={48} /><p>{t('demoCreating')}</p>{toastEl}</div>;
   if (!profileDone) return <><ProfileSetupModal />{toastEl}</>;   // лента заблокирована до заполнения контактов
   if (!me) return <div className="onb" style={{ alignItems: 'center' }}><Logo size={48} /><p>{t('loading')}</p></div>;
 

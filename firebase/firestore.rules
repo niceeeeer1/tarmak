@@ -52,6 +52,18 @@ service cloud.firestore {
         && (l.size() < 3 || driveUrl(l[2])) && (l.size() < 4 || driveUrl(l[3]));
     }
 
+    // ───────── демо-аккаунты для защиты проекта ─────────
+    // Только эти три email могут сами получить роль teacher (сразу verified) или admin.
+    // Должны совпадать с DEMO_ACCOUNTS в web/lib/constants.ts. На продакшене с реальными
+    // студентами уберите их отсюда (или замените на несуществующие адреса) — иначе любой,
+    // кто знает демо-пароль из NEXT_PUBLIC_DEMO_PASSWORD, войдёт как admin.
+    function demoRoleOk(d) {
+      let email = request.auth.token.email;
+      return (d.role == 'student' && email == 'demo.student@tarmak.kz' && d.verified == false)
+          || (d.role == 'teacher' && email == 'demo.teacher@tarmak.kz' && d.verified == true)
+          || (d.role == 'admin' && email == 'demo.admin@tarmak.kz' && d.verified == true);
+    }
+
     // ───────── пользователи ─────────
     match /users_public/{userId} {
       allow read: if signedIn();
@@ -60,8 +72,9 @@ service cloud.firestore {
         && data().keys().hasOnly(['name', 'handle', 'role', 'group', 'avatar', 'hue', 'points', 'verified', 'following', 'createdAt'])
         && validName(data().name)
         && data().handle is string && data().handle.matches('^[a-z0-9_.]{3,30}$')
-        && data().role in ['student', 'teacher']          // admin назначает только другой admin (или консоль)
-        && data().verified == false                         // преподавателя подтверждает администрация
+        // обычные пользователи: student/teacher без верификации (admin назначает только другой admin или консоль);
+        // исключение — демо-аккаунты из demoRoleOk()
+        && ((data().role in ['student', 'teacher'] && data().verified == false) || demoRoleOk(data()))
         && data().points == 0 && data().following == []
         && data().group is string && data().group.size() >= 2 && data().group.size() <= 40
         && data().avatar is string && data().avatar.size() <= 500
@@ -75,6 +88,8 @@ service cloud.firestore {
           && validName(data().name) && data().group is string && data().group.size() <= 40
           && data().following is list && data().following.size() <= 1000
           && (data().points == resource.data.points || (data().points == resource.data.points + 1 && rateOk())))
+        // демо-аккаунт сам выставляет себе свою демо-роль (если профиль был создан раньше с другой ролью)
+        || (signedIn() && userId == uid() && onlyChanged(['role', 'verified']) && demoRoleOk(data()))
         // администрация: роль, подтверждение преподавателя, баллы
         || (isAdmin() && onlyChanged(['role', 'verified', 'points'])
           && data().role in ['student', 'teacher', 'admin'] && data().verified is bool && data().points is int);
@@ -199,6 +214,15 @@ service cloud.firestore {
               && t.official.text is string && t.official.text.size() <= 1500))
         && validImages(t.afterImages);
     }
+    function replyDecrement(postId) {
+      let cid = request.resource.data.lastDeletedComment;
+      return onlyChanged(['replyCount', 'lastDeletedComment'])
+        && request.resource.data.replyCount == resource.data.get('replyCount', 0) - 1
+        && request.resource.data.replyCount >= 0
+        && cid is string
+        && exists(commentDoc(cid)) && !existsAfter(commentDoc(cid))
+        && get(commentDoc(cid)).data.postId == postId;
+    }
     function ownsAnon(postId) {
       return exists(ownerDoc(postId)) && get(ownerDoc(postId)).data.uid == uid();
     }
@@ -218,6 +242,8 @@ service cloud.firestore {
         || (onlyChanged(['repostedBy']) && selfToggle(data().repostedBy, resource.data.repostedBy))
         // счётчик ответов: +1 только вместе с комментарием (антиспам-отметка в том же batch)
         || (onlyChanged(['replyCount']) && data().replyCount == resource.data.get('replyCount', 0) + 1 && rateOk())
+        // −1 только вместе с удалением реального комментария этого поста (его id — в lastDeletedComment)
+        || replyDecrement(postId)
         || pollVote(postId)
         || confirmToggle()
         || adminTicket());
@@ -259,7 +285,12 @@ service cloud.firestore {
         && (data().parentId == null || exists(commentDoc(data().parentId)))
         && rateOk();
       allow update: if hasProfile() && onlyChanged(['likedBy']) && selfToggle(data().likedBy, resource.data.likedBy);
-      allow delete: if hasProfile() && (resource.data.authorId == uid() || isAdmin());
+      // удалить может автор или admin; счётчик replyCount поста уменьшается в том же batch
+      // (если пост уже удалён или счётчик и так 0 — только сам комментарий)
+      allow delete: if hasProfile() && (resource.data.authorId == uid() || isAdmin())
+        && (!exists(postDoc(resource.data.postId))
+            || get(postDoc(resource.data.postId)).data.get('replyCount', 0) <= 0
+            || getAfter(postDoc(resource.data.postId)).data.get('replyCount', 0) == get(postDoc(resource.data.postId)).data.get('replyCount', 0) - 1);
     }
 
     // ───────── уведомления ─────────

@@ -45,6 +45,7 @@ function useStore() {
   const [query_, setQuery] = useState('');
   const [sheet, setSheet] = useState<Sheet>(null);
   const [composer, setComposer] = useState<ComposerInit | null>(null);
+  const [demoBusy, setDemoBusy] = useState(false);   // демо-вход: аккаунт/профиль ещё создаётся
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const i = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(i); }, []);
 
@@ -172,6 +173,12 @@ function useStore() {
       const post = posts.find(p => p.id === postId);
       DB.addComment(me.id, postId, parent ? parent.id : null, text, parent ? parent.authorId : post?.authorId || null).catch(e => fail(e, 'rateLimited'));
     },
+    deleteComment: (c: Comment) => {
+      if (!me || c.pending || (c.authorId !== me.id && me.role !== 'admin')) return;
+      const post = posts.find(p => p.id === c.postId);
+      DB.deleteComment(c, post && !post.pending ? post.replyCount : null).then(() => showToast(t('replyDeleted'))).catch(e => fail(e));
+    },
+    setDemoBusy,
     setStatus: (p: Post, s: TicketStatus, afterImages?: string[]) => {
       if (!me || !p.ticket || (p.ticket.status === s && !afterImages)) return;
       DB.setStatus(p, s, me.id, afterImages).catch(e => fail(e));
@@ -226,7 +233,7 @@ function useStore() {
   };
 
   return {
-    firebaseConfigured, authUser, authReady, privReady, profileDone, loaded,
+    firebaseConfigured, authUser, authReady, privReady, profileDone, loaded, demoBusy,
     lang, setLang, theme, setTheme, t, now,
     me, role, users, posts, notifications, stats, unread, admins,
     tab, stack, view, vkey, feedTab, setFeedTab, query: query_, setQuery, sheet, setSheet, composer, setComposer, toast,

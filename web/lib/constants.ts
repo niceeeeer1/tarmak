@@ -20,4 +20,10 @@ export const DEMO_ACCOUNTS = {
   admin: 'demo.admin@tarmak.kz',
 } as const;
 export const DEMO_PASSWORD = process.env.NEXT_PUBLIC_DEMO_PASSWORD || '';
+/** Профили, которые создаются при первом демо-входе (если seed.mjs не запускали). Email-ы продублированы в firestore.rules → demoRoleOk(). */
+export const DEMO_PROFILES = {
+  student: { name: 'Демо Студент', group: 'ИК-923', phone: '+7 (700) 000-00-01', hue: 330 },
+  teacher: { name: 'Демо Оқытушы', group: 'Информатика кафедрасы', phone: '+7 (700) 000-00-02', hue: 255 },
+  admin: { name: 'Демо Әкімшілік', group: 'Студенттік кеңес', phone: '+7 (700) 000-00-03', hue: 175 },
+} as const;
 export const RATE_LIMIT_SEC = 10;

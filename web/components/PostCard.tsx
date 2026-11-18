@@ -40,14 +40,14 @@ export function PostCard({ post, line, isStatic }: { post: Post; line?: boolean;
   );
 }
 
-export function CommentCard({ c, line, onReply }: { c: Comment; line?: boolean; onReply: (c: Comment) => void }) {
+export function CommentCard({ c, line, onReply, onDelete }: { c: Comment; line?: boolean; onReply: (c: Comment) => void; onDelete?: (c: Comment) => void }) {
   return (
     <article className={'post static' + (c.pending ? ' pending' : '')}>
       <div className="rail"><Avatar uid={c.authorId} anon={c.anon} />{line && <div className="line" />}</div>
       <div className="main">
         <Header authorId={c.authorId} anon={c.anon} mine={c.mine} createdAt={c.createdAt} />
         <div className="txt"><RichText text={c.text} /></div>
-        <CommentActions c={c} onReply={onReply} />
+        <CommentActions c={c} onReply={onReply} onDelete={onDelete} />
       </div>
     </article>
   );

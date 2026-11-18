@@ -1,5 +1,5 @@
 'use client';
-import { Box, Check, Clock, Heart, Lightbulb, MapPin, Megaphone, MessageCircle, Pin, Repeat2, Send, ShieldCheck, ThumbsUp, TriangleAlert } from 'lucide-react';
+import { Box, Check, Clock, Heart, Lightbulb, MapPin, Megaphone, MessageCircle, Pin, Repeat2, Send, ShieldCheck, ThumbsUp, Trash2, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import { CLOSED, TONE } from '@/lib/constants';
 import type { TKey } from '@/lib/i18n';
@@ -131,9 +131,10 @@ export function Actions({ post }: { post: Post }) {
   );
 }
 
-export function CommentActions({ c, onReply }: { c: Comment; onReply: (c: Comment) => void }) {
-  const { me, act } = useApp();
+export function CommentActions({ c, onReply, onDelete }: { c: Comment; onReply: (c: Comment) => void; onDelete?: (c: Comment) => void }) {
+  const { me, act, t } = useApp();
   const [k, setK] = useState(0);
+  const [asking, setAsking] = useState(false);   // подтверждение удаления прямо в строке ответа
   const liked = !!me && c.likedBy.includes(me.id);
   return (
     <div className="acts">
@@ -142,6 +143,18 @@ export function CommentActions({ c, onReply }: { c: Comment; onReply: (c: Commen
         <Heart size={18} fill={liked ? 'currentColor' : 'none'} />{c.likedBy.length > 0 && <span>{c.likedBy.length}</span>}
       </button>
       <button className="act" disabled={c.pending} onClick={e => { e.stopPropagation(); onReply(c); }}><MessageCircle size={18} /></button>
+      {onDelete && !asking && (
+        <button className="act" disabled={c.pending} aria-label={t('deleteReply')} title={t('deleteReply')} onClick={e => { e.stopPropagation(); setAsking(true); }}>
+          <Trash2 size={17} />
+        </button>
+      )}
+      {onDelete && asking && (
+        <span className="flex items-center gap-1" role="group" aria-label={t('confirmDelete')}>
+          <span className="pm" style={{ marginLeft: 6 }}>{t('confirmDelete')}</span>
+          <button className="act danger fill" autoFocus onClick={e => { e.stopPropagation(); setAsking(false); onDelete(c); }}><Trash2 size={14} />{t('yesDelete')}</button>
+          <button className="act" onClick={e => { e.stopPropagation(); setAsking(false); }}>{t('cancel')}</button>
+        </span>
+      )}
     </div>
   );
 }

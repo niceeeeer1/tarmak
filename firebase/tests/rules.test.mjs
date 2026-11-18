@@ -156,3 +156,63 @@ test('комментарии и баллы активности', async () => {
   await assertFails(updateDoc(doc(db, 'users_public/s1'), { points: increment(1) }));          // балл без публикации
   await assertSucceeds(updateDoc(doc(as('admin1', 'admin@x.kz'), 'users_public/s1'), { points: increment(10), verified: false }));
 });
+
+test('удаление комментария: автор или admin, счётчик replyCount −1 в том же batch', async () => {
+  await register(as('s1'), 's1'); await register(as('s2'), 's2');
+  await post(as('s1'), 's1', 'p1');
+  const comment = async (db, uid, id) => {
+    await env.withSecurityRulesDisabled(c => setDoc(doc(c.firestore(), 'rate', uid), { lastAt: new Date(Date.now() - 60000) }));
+    const b = writeBatch(db);
+    b.set(doc(db, 'comments', id), { postId: 'p1', parentId: null, authorId: uid, text: 'Жауап', likedBy: [], createdAt: serverTimestamp() });
+    b.set(doc(db, 'rate', uid), { lastAt: serverTimestamp() });
+    b.update(doc(db, 'posts/p1'), { replyCount: increment(1) });
+    return b.commit();
+  };
+  const del = (db, id, withCounter = true, markId = id) => {
+    const b = writeBatch(db);
+    b.delete(doc(db, 'comments', id));
+    if (withCounter) b.update(doc(db, 'posts/p1'), { replyCount: increment(-1), lastDeletedComment: markId });
+    return b.commit();
+  };
+  const count = async () => { let n; await env.withSecurityRulesDisabled(async c => { n = (await getDoc(doc(c.firestore(), 'posts/p1'))).data().replyCount; }); return n; };
+  await assertSucceeds(comment(as('s1'), 's1', 'c1'));
+  await assertSucceeds(comment(as('s2'), 's2', 'c2'));
+  await assertSucceeds(comment(as('s2'), 's2', 'c3'));
+  if (await count() !== 3) throw new Error('count != 3');
+
+  await assertFails(del(as('s2'), 'c1'));                                                   // чужой комментарий
+  await assertFails(del(as('s1'), 'c1', false));                                            // без уменьшения счётчика
+  await assertFails(updateDoc(doc(as('s1'), 'posts/p1'), { replyCount: increment(-1), lastDeletedComment: 'c1' })); // −1 без удаления
+  await assertFails(updateDoc(doc(as('s1'), 'posts/p1'), { replyCount: increment(-1) }));  // −1 без отметки
+  await assertSucceeds(del(as('s1'), 'c1'));                                                // автор
+  await assertSucceeds(del(as('admin1', 'admin@x.kz'), 'c2'));                              // admin
+  if (await count() !== 1) throw new Error('count != 1');
+  await assertFails(del(as('s2'), 'c3', true, 'c1'));                                       // отметка от другого (уже удалённого) комментария
+  await assertSucceeds(del(as('s2'), 'c3'));
+  if (await count() !== 0) throw new Error('count != 0');
+});
+
+test('демо-роли: teacher (verified) и admin — только для демо-email', async () => {
+  const demo = (uid, email, role, verified) => {
+    const db = as(uid, email);
+    const b = writeBatch(db);
+    b.set(doc(db, 'users_public', uid), { name: 'Демо', handle: 'demo_' + role, role, group: 'Демо-топ', avatar: '', hue: 1, points: 0, verified, following: [], createdAt: serverTimestamp() });
+    b.set(doc(db, 'users_private', uid), { email, phone, tickets: [], createdAt: serverTimestamp() });
+    return b.commit();
+  };
+  await assertFails(demo('x1', 'hacker@x.kz', 'admin', true));                              // обычный пользователь не выдаёт себе admin
+  await assertFails(demo('x2', 'hacker@x.kz', 'teacher', true));                            // и verified-преподавателя
+  await assertFails(demo('x3', 'demo.student@tarmak.kz', 'admin', true));                   // демо-студент — не admin
+  await assertFails(demo('x4', 'demo.teacher@tarmak.kz', 'admin', true));                   // демо-преподаватель — не admin
+  await assertSucceeds(demo('d1', 'demo.student@tarmak.kz', 'student', false));
+  await assertSucceeds(demo('d2', 'demo.teacher@tarmak.kz', 'teacher', true));
+  await assertSucceeds(demo('d3', 'demo.admin@tarmak.kz', 'admin', true));
+  // демо-admin действительно admin: читает чужие контакты
+  await assertSucceeds(getDoc(doc(as('d3', 'demo.admin@tarmak.kz'), 'users_private/d1')));
+  // профиль демо-преподавателя, созданный раньше обычным способом, можно поднять до verified
+  await assertSucceeds(demo('d4', 'demo.teacher@tarmak.kz', 'teacher', false).then(() => {}));
+  await assertSucceeds(updateDoc(doc(as('d4', 'demo.teacher@tarmak.kz'), 'users_public/d4'), { verified: true }));
+  await register(as('s9'), 's9', 'teacher');
+  await assertFails(updateDoc(doc(as('s9'), 'users_public/s9'), { verified: true }));       // обычный преподаватель — нет
+  await assertFails(updateDoc(doc(as('s9'), 'users_public/s9'), { role: 'admin', verified: true }));
+});

@@ -21,14 +21,19 @@ export function PostDetail({ id, focus }: { id: string; focus?: boolean }) {
   const ids = head ? [head.id, ...posts.filter(p => p.chainOf === head.id).map(p => p.id)] : [];
   const mine = useComments({ postIds: ids }, me?.id || null);   // realtime только для открытой ветки
   if (!p0 || !head) return <div><SubBar title={t('thread')} /><div className="empty">—</div></div>;
-  const kids = (pid: string | null) => mine.filter(c => (c.parentId || null) === pid).sort((a, b) => a.createdAt - b.createdAt);
+  // ответы на удалённый комментарий не пропадают — показываем их на верхнем уровне
+  const present = new Set(mine.map(c => c.id));
+  const parentOf = (c: Comment) => (c.parentId && present.has(c.parentId) ? c.parentId : null);
+  const kids = (pid: string | null) => mine.filter(c => parentOf(c) === pid).sort((a, b) => a.createdAt - b.createdAt);
+  // удалять может автор ответа и admin (то же проверяют firestore.rules)
+  const canDelete = (c: Comment) => !!me && (c.authorId === me.id || role === 'admin');
   const pick = (c: Comment) => { setReplyTo(c); inRef.current?.focus(); };
 
   const Tree = ({ c }: { c: Comment }) => {
     const ch = kids(c.id);
     return (
       <div>
-        <CommentCard c={c} line={ch.length > 0} onReply={pick} />
+        <CommentCard c={c} line={ch.length > 0} onReply={pick} onDelete={canDelete(c) ? act.deleteComment : undefined} />
         {ch.length > 0 && <div className="nest">{ch.map(x => <Tree key={x.id} c={x} />)}</div>}
       </div>
     );
