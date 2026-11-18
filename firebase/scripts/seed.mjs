@@ -32,8 +32,9 @@ for (const [i, p] of people.entries()) {
   try { user = await auth.getUserByEmail(p.email); await auth.updateUser(user.uid, { password }); }
   catch { user = await auth.createUser({ email: p.email, password, displayName: p.name, emailVerified: true }); }
   U[p.key] = user.uid;
-  await db.doc(`users_public/${user.uid}`).set({ name: p.name, handle: p.handle, role: p.role, group: p.group, avatar: '', hue: p.hue,
-    points: 5 + i * 3, verified: p.verified, following: [], createdAt: ts(now - 30 * D) });
+  await db.doc(`users_public/${user.uid}`).set({ name: p.name, handle: p.handle, role: p.role, group: p.group, avatarUrl: '', bio: '', hue: p.hue,
+    points: [35, 120, 0, 15, 60, 260][i] ?? 0, verified: p.verified, following: [], createdAt: ts(now - 30 * D) });
+  await db.doc(`usernames/${p.handle}`).set({ uid: user.uid });   // уникальность @username
   await db.doc(`users_private/${user.uid}`).set({ email: p.email, phone: phone(i), tickets: [], createdAt: ts(now - 30 * D) });
 }
 await db.doc(`users_public/${U.student}`).update({ following: [U.admin, U.teacher] });

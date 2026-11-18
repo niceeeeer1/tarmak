@@ -7,12 +7,12 @@ import * as DB from './db';
 import { auth, db, firebaseConfigured } from './firebase';
 import { I18N, type Lang, type TKey } from './i18n';
 import { computeStats } from './stats';
-import type { Comment, ComposerInit, Draft, Me, Notif, Post, PrivateProfile, Role, Sheet, Stats, TicketStatus, User, View } from './types';
-import { copyText, pad } from './utils';
+import type { Chat, Redemption, ShopItemId, Comment, ComposerInit, Draft, Me, Notif, Post, PrivateProfile, Role, Sheet, Stats, TicketStatus, User, View } from './types';
+import { chatIdFor, copyText, pad } from './utils';
 import { uploadToDrive } from './upload';
 
 type Theme = 'system' | 'light' | 'dark';
-type FeedTab = 'all' | 'talk' | 'idea' | 'complaint' | 'lost';
+type FeedTab = 'all' | 'talk' | 'idea' | 'complaint' | 'lost' | 'archive';
 type RawPost = { id: string; d: Record<string, unknown>; pending: boolean };
 /** Бесплатный тариф Spark: 50 000 чтений в сутки. Лента читает последние FEED_LIMIT постов, комментарии — только открытой ветки. */
 const FEED_LIMIT = 150;
@@ -70,6 +70,10 @@ function useStore() {
   const [notifications, setNotifs] = useState<Notif[]>([]);
   const [owned, setOwned] = useState<Set<string>>(new Set());
   const [myVotes, setMyVotes] = useState<Record<string, number>>({});
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [myCoupons, setMyCoupons] = useState<Redemption[]>([]);
+  const [prizeQueue, setPrizeQueue] = useState<Redemption[]>([]);   // admin: купоны, ждущие выдачи
+  const [lightbox, setLightbox] = useState<{ images: string[]; index: number } | null>(null);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     if (!uid || !profileDone) return;
@@ -89,6 +93,11 @@ function useStore() {
       onSnapshot(query(collection(db, 'notifications'), where('to', '==', uid)),
         s => setNotifs(s.docs.map(d => DB.notifFrom(d.id, d.data(est))).sort((a, b) => b.createdAt - a.createdAt)), onErr),
       onSnapshot(query(collection(db, 'posts_owner'), where('uid', '==', uid)), s => setOwned(new Set(s.docs.map(d => d.id))), onErr),
+      // личные диалоги: rules отдают только чаты, где я участник
+      onSnapshot(query(collection(db, 'chats'), where('participants', 'array-contains', uid)),
+        s => setChats(s.docs.map(d => DB.chatFrom(d.id, d.data({ serverTimestamps: 'estimate' }), uid)).sort((a, b) => b.lastAt - a.lastAt)), onErr),
+      onSnapshot(query(collection(db, 'redemptions'), where('uid', '==', uid)),
+        s => setMyCoupons(s.docs.map(d => DB.redemptionFrom(d.id, d.data(est))).sort((a, b) => b.createdAt - a.createdAt)), onErr),
       onSnapshot(query(collectionGroup(db, 'votes'), where('uid', '==', uid)), s => {
         const m: Record<string, number> = {};
         s.forEach(d => { const postId = d.ref.parent.parent?.id; if (postId) m[postId] = d.data().option; });
@@ -107,6 +116,18 @@ function useStore() {
   const me: Me | null = uid && pub && priv ? { ...pub, email: priv.email, phone: priv.phone } : null;
   const role: Role = me?.role || 'student';
   const admins = useMemo(() => Object.values(users).filter(u => u.role === 'admin').map(u => u.id), [users]);
+  const isAdminRole = pub?.role === 'admin';
+  const [prizeRetry, setPrizeRetry] = useState(0);
+  useEffect(() => {
+    if (!uid || !profileDone || !isAdminRole) { setPrizeQueue([]); return; }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsub = onSnapshot(query(collection(db, 'redemptions'), where('status', '==', 'pending')),
+      s => setPrizeQueue(s.docs.map(d => DB.redemptionFrom(d.id, d.data({ serverTimestamps: 'estimate' }))).sort((a, b) => a.createdAt - b.createdAt)),
+      // роль admin могла быть ещё не подтверждена сервером (локальная запись) — переподписываемся
+      () => { if (prizeRetry < 5) timer = setTimeout(() => setPrizeRetry(r => r + 1), 2000); });
+    return () => { unsub(); clearTimeout(timer); };
+  }, [uid, profileDone, isAdminRole, prizeRetry]);
+  const unreadChats = chats.filter(c => c.unread).length;
   const stats: Stats = useMemo(() => computeStats(posts, now), [posts, now]);
   const unread = notifications.some(n => !n.read);
 
@@ -150,7 +171,7 @@ function useStore() {
         quoteId: i === 0 ? dr.quoteId : null, repostOf: null, chainOf: i ? ids[0] : null, chainIdx: i, likedBy: [], repostedBy: [], replyCount: 0, pending: true,
         poll: s.poll ? { options: s.poll.options.filter(o => o.trim()), counts: s.poll.options.filter(o => o.trim()).map(() => 0), myVote: null } : null,
         ticket: i === 0 && isTicket ? { num: null, category: dr.type === 'complaint' ? dr.category : (dr.type as 'idea' | 'lost'), building: dr.building, floor: dr.floor,
-          room: dr.room, roomKey: '', status: dr.type === 'lost' ? 'searching' : 'accepted', deadline: null, resolvedAt: null, confirmedBy: [], official: null, afterImages: [] } : null,
+          room: dr.room, roomKey: '', status: dr.type === 'lost' ? 'searching' : 'accepted', deadline: null, resolvedAt: null, confirmedBy: [], official: null, afterImages: [], helperId: null } : null,
       })), ...d]);
       setComposer(null); setStack([]); setTab('home'); setFeedTab('all');
       setTimeout(() => window.scrollTo({ top: 0, behavior: 'smooth' }), 30);
@@ -175,13 +196,33 @@ function useStore() {
     },
     deleteComment: (c: Comment) => {
       if (!me || c.pending || (c.authorId !== me.id && me.role !== 'admin')) return;
-      const post = posts.find(p => p.id === c.postId);
-      DB.deleteComment(c, post && !post.pending ? post.replyCount : null).then(() => showToast(t('replyDeleted'))).catch(e => fail(e));
+      DB.deleteComment(c).then(() => showToast(t('replyDeleted'))).catch(e => fail(e));
     },
+    saveProfile: async (f: { name: string; handle: string; group: string; bio: string; avatarUrl: string }) => {
+      if (!me) return false;
+      try { await DB.updateProfile(me, f); showToast(t('profileSaved')); return true; }
+      catch (e) { fail(e, 'handleTaken'); return false; }
+    },
+    buy: async (itemId: ShopItemId) => {
+      if (!me) return;
+      try { const code = await DB.buyItem(me.id, itemId); showToast(t('bought') + ': ' + code); }
+      catch (e) { fail(e, 'notEnough'); }
+    },
+    handleRedemption: (r: Redemption, issue: boolean) => {
+      if (!me) return;
+      DB.handleRedemption(r, me.id, issue).then(() => showToast(issue ? t('rd_issued') : t('rd_cancelled'))).catch(e => fail(e));
+    },
+    sendMessage: (other: string, text: string) => {
+      if (!me || !text.trim()) return;
+      const exists = chats.some(c => c.id === chatIdFor(me.id, other));
+      DB.sendMessage(me.id, other, text, exists).catch(e => fail(e));
+    },
+    markChatRead: (chatId: string) => { if (me) DB.markChatRead(chatId, me.id).catch(() => {}); },
+    openLightbox: (images: string[], index: number) => setLightbox({ images, index }),
     setDemoBusy,
-    setStatus: (p: Post, s: TicketStatus, afterImages?: string[]) => {
+    setStatus: (p: Post, s: TicketStatus, afterImages?: string[], helperId?: string | null) => {
       if (!me || !p.ticket || (p.ticket.status === s && !afterImages)) return;
-      DB.setStatus(p, s, me.id, afterImages).catch(e => fail(e));
+      DB.setStatus(p, s, me.id, afterImages, helperId).catch(e => fail(e));
       showToast(t('statusChanged') + ': ' + t(('st_' + s) as TKey));
     },
     setDeadline: (p: Post, d: number | null) => { DB.setDeadline(p, d).catch(e => fail(e)); showToast(t('deadlineSet')); },
@@ -230,12 +271,15 @@ function useStore() {
     },
     search: (q: string) => { setQuery(q); setStack([]); setTab('search'); },
     admin: () => go.push({ name: 'admin' }),
+    chats: () => go.push({ name: 'chats' }),
+    chat: (other: string) => go.push({ name: 'chat', uid: other }),
+    shop: () => go.push({ name: 'shop' }),
   };
 
   return {
     firebaseConfigured, authUser, authReady, privReady, profileDone, loaded, demoBusy,
     lang, setLang, theme, setTheme, t, now,
-    me, role, users, posts, notifications, stats, unread, admins,
+    me, role, users, posts, notifications, stats, unread, admins, chats, unreadChats, myCoupons, prizeQueue, lightbox, setLightbox,
     tab, stack, view, vkey, feedTab, setFeedTab, query: query_, setQuery, sheet, setSheet, composer, setComposer, toast,
     act, go,
   };

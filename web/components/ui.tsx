@@ -1,5 +1,6 @@
 'use client';
-import { EyeOff, Plus, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, EyeOff, Plus, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { useApp } from '@/lib/store';
 import { fmtDate } from '@/lib/utils';
@@ -38,7 +39,7 @@ export function Avatar({ uid, anon, size = 36, plus }: { uid: string | null; ano
       style={{ width: size, height: size, fontSize: size * 0.36, background: `linear-gradient(140deg,hsl(${u.hue} 72% 62%),hsl(${(u.hue + 38) % 360} 66% 44%))` }}>
       {u.avatar
         // eslint-disable-next-line @next/next/no-img-element
-        ? <img src={u.avatar} alt="" referrerPolicy="no-referrer" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
+        ? <img src={u.avatar} alt="" referrerPolicy="no-referrer" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
         : u.role === 'admin' ? <Logo size={size * 0.55} stroke={2.4} /> : ini}
       {plus && (
         <button className="plus" aria-label="follow" onClick={e => { e.stopPropagation(); act.follow(u.id); }}>
@@ -76,17 +77,51 @@ export function RichText({ text }: { text: string }) {
 }
 
 /** Карусель фото как в Threads. src — ссылка Google Диска или data URL (пока идёт загрузка). */
+/** Фото целиком в любом формате (вертикальные, горизонтальные, квадратные) — без обрезки; клик открывает Lightbox */
+export const PHOTO_CLS = 'w-full h-auto max-h-[540px] object-contain rounded-xl bg-black/30';
 export function Photos({ images, onRemove }: { images: string[]; onRemove?: (i: number) => void }) {
+  const { act } = useApp();
   if (!images?.length) return null;
   return (
     <div className={'photos' + (images.length === 1 ? ' one' : '')} onClick={e => e.stopPropagation()}>
       {images.map((src, i) => (
         <div key={i} className="photo">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" />
+          <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" className={PHOTO_CLS}
+            style={onRemove ? undefined : { cursor: 'zoom-in' }} onClick={() => !onRemove && act.openLightbox(images, i)} />
           {onRemove && <button className="x" aria-label="remove" onClick={() => onRemove(i)}><X size={14} strokeWidth={2.6} /></button>}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Полноэкранный просмотр фото: ← → / свайп, Esc или тап по фону — закрыть */
+export function Lightbox() {
+  const { lightbox, setLightbox, t } = useApp();
+  const [x0, setX0] = useState<number | null>(null);
+  const n = lightbox?.images.length || 0;
+  const go = (d: number) => setLightbox(l => (l ? { ...l, index: (l.index + d + l.images.length) % l.images.length } : l));
+  useEffect(() => {
+    if (!lightbox) return;
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null); if (e.key === 'ArrowRight') go(1); if (e.key === 'ArrowLeft') go(-1); };
+    window.addEventListener('keydown', k);
+    document.body.style.overflow = 'hidden';
+    return () => { window.removeEventListener('keydown', k); document.body.style.overflow = ''; };
+  }, [lightbox]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!lightbox) return null;
+  return (
+    <div className="lightbox" role="dialog" aria-modal="true" onClick={() => setLightbox(null)}
+      onTouchStart={e => setX0(e.touches[0].clientX)}
+      onTouchEnd={e => { if (x0 !== null && n > 1) { const dx = e.changedTouches[0].clientX - x0; if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1); } setX0(null); }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={lightbox.images[lightbox.index]} alt="" referrerPolicy="no-referrer" onClick={e => e.stopPropagation()} />
+      <button className="lb-x" aria-label={t('close')} onClick={() => setLightbox(null)}><X size={22} /></button>
+      {n > 1 && <>
+        <button className="lb-nav prev" aria-label="prev" onClick={e => { e.stopPropagation(); go(-1); }}><ChevronLeft size={28} /></button>
+        <button className="lb-nav next" aria-label="next" onClick={e => { e.stopPropagation(); go(1); }}><ChevronRight size={28} /></button>
+        <div className="lb-count">{lightbox.index + 1} / {n}</div>
+      </>}
     </div>
   );
 }

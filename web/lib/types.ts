@@ -6,7 +6,7 @@ export type Building = 'main' | 'b2' | 'dorm' | 'gym';
 
 /** users_public/{uid} — видят все вошедшие */
 export interface User {
-  id: string; name: string; handle: string; role: Role; group: string; avatar: string; hue: number;
+  id: string; name: string; handle: string; role: Role; group: string; avatar: string; bio: string; hue: number;
   points: number; verified: boolean; following: string[]; followers: number;
 }
 /** users_private/{uid} — только владелец и admin */
@@ -18,6 +18,7 @@ export interface Ticket {
   num: number | null; category: Category; building: Building; floor: string; room: string; roomKey: string;
   status: TicketStatus; deadline: number | null; resolvedAt: number | null; confirmedBy: string[];
   official: Official | null; afterImages: string[];
+  helperId: string | null;   // кто помог решить (получил +15 баллов)
 }
 export interface PollView { options: string[]; counts: number[]; myVote: number | null }
 
@@ -31,10 +32,10 @@ export interface Comment {
   id: string; postId: string; parentId: string | null; authorId: string | null; anon: boolean; mine: boolean;
   text: string; createdAt: number; likedBy: string[]; pending?: boolean;
 }
-export type NotifType = 'like' | 'reply' | 'repost' | 'quote' | 'follow' | 'status' | 'official' | 'ticket' | 'confirm';
+export type NotifType = 'like' | 'reply' | 'repost' | 'quote' | 'follow' | 'status' | 'official' | 'ticket' | 'confirm' | 'points' | 'prize';
 export interface Notif {
   id: string; type: NotifType; fromId: string | null; postId: string | null;
-  payload: { status?: TicketStatus; num?: number; anon?: boolean }; read: boolean; createdAt: number;
+  payload: { status?: TicketStatus; num?: number; anon?: boolean; points?: number; item?: string; prize?: 'issued' | 'cancelled' }; read: boolean; createdAt: number;
 }
 export interface ComposerInit {
   quoteId?: string; type?: Draft['type']; room?: string; building?: Building; floor?: string; restore?: Draft;
@@ -52,5 +53,14 @@ export interface Draft {
 
 export type View =
   | { name: 'home' } | { name: 'search' } | { name: 'notif' } | { name: 'me' } | { name: 'admin' }
-  | { name: 'post'; id: string; focus?: boolean } | { name: 'profile'; uid: string };
-export type Sheet = { kind: 'repost' | 'share' | 'more'; id: string } | { kind: 'settings' } | null;
+  | { name: 'post'; id: string; focus?: boolean } | { name: 'profile'; uid: string }
+  | { name: 'chats' } | { name: 'chat'; uid: string } | { name: 'shop' };
+export type Sheet = { kind: 'repost' | 'share' | 'more'; id: string } | { kind: 'settings' } | { kind: 'editProfile' } | null;
+
+/** chats/{a_b} — сводка диалога; сообщения в chats/{a_b}/messages */
+export interface Chat { id: string; participants: string[]; other: string; lastText: string; lastAt: number; lastSender: string; unread: boolean }
+export interface Message { id: string; from: string; text: string; createdAt: number; pending: boolean }
+
+export type ShopItemId = 'snickers' | 'coffee' | 'stickers' | 'diploma';
+/** redemptions/{code} — купон магазина бонусов */
+export interface Redemption { code: string; uid: string; itemId: ShopItemId; cost: number; status: 'pending' | 'issued' | 'cancelled'; createdAt: number }

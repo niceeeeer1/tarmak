@@ -12,6 +12,9 @@ rules_version = '2';
 //   posts_owner/{id}      автор анонимного поста — только сам автор (даже admin не видит)
 //   comments/{id}         ветки комментариев
 //   notifications/{id}    уведомления — только получатель
+//   usernames/{handle}    занятые @username → { uid } (уникальность юзернеймов)
+//   redemptions/{code}    купоны магазина бонусов — владелец и admin
+//   chats/{a_b}           личные диалоги; chats/{id}/messages/{id} — только два участника
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -27,6 +30,10 @@ service cloud.firestore {
     function ownerDoc(id) { return /databases/$(database)/documents/posts_owner/$(id); }
     function voteDoc(postId, id) { return /databases/$(database)/documents/posts/$(postId)/votes/$(id); }
     function commentDoc(id) { return /databases/$(database)/documents/comments/$(id); }
+    function handleDoc(h) { return /databases/$(database)/documents/usernames/$(h); }
+    function redemptionDoc(c) { return /databases/$(database)/documents/redemptions/$(c); }
+    function chatDoc(id) { return /databases/$(database)/documents/chats/$(id); }
+    function validHandle(h) { return h is string && h.matches('^[a-z0-9_.]{3,30}$'); }
     function hasProfile() { return signedIn() && exists(pub(uid())); }
     function myRole() { return get(pub(uid())).data.role; }
     function isAdmin() { return hasProfile() && myRole() == 'admin'; }
@@ -69,25 +76,41 @@ service cloud.firestore {
       allow read: if signedIn();
       // создаётся при обязательной регистрации вместе с users_private (одним batch)
       allow create: if signedIn() && userId == uid()
-        && data().keys().hasOnly(['name', 'handle', 'role', 'group', 'avatar', 'hue', 'points', 'verified', 'following', 'createdAt'])
+        && data().keys().hasOnly(['name', 'handle', 'role', 'group', 'avatar', 'avatarUrl', 'bio', 'hue', 'points', 'verified', 'following', 'createdAt'])
         && validName(data().name)
-        && data().handle is string && data().handle.matches('^[a-z0-9_.]{3,30}$')
+        // @username уникален: в том же batch занят usernames/{handle} = { uid }
+        && validHandle(data().handle) && getAfter(handleDoc(data().handle)).data.uid == userId
         // обычные пользователи: student/teacher без верификации (admin назначает только другой admin или консоль);
         // исключение — демо-аккаунты из demoRoleOk()
         && ((data().role in ['student', 'teacher'] && data().verified == false) || demoRoleOk(data()))
         && data().points == 0 && data().following == []
         && data().group is string && data().group.size() >= 2 && data().group.size() <= 40
-        && data().avatar is string && data().avatar.size() <= 500
+        && data().get('avatar', '') is string && data().get('avatar', '').size() <= 500
+        && data().get('avatarUrl', '') is string && data().get('avatarUrl', '').size() <= 500
+        && data().get('bio', '') is string && data().get('bio', '').size() <= 160
         && data().hue is int
         && data().createdAt == request.time
         && existsAfter(priv(userId));
       allow update: if
-        // владелец: имя, группа, аватар, подписки, +1 балл за публикацию (только вместе с антиспам-отметкой)
+        // владелец: имя, @username, группа, «о себе», аватар (только ссылка Google Диска), подписки.
+        // Баллы сам себе начислять НЕЛЬЗЯ — только admin за решённую заявку.
         (signedIn() && userId == uid()
-          && onlyChanged(['name', 'group', 'avatar', 'following', 'points'])
-          && validName(data().name) && data().group is string && data().group.size() <= 40
+          && onlyChanged(['name', 'handle', 'group', 'bio', 'avatarUrl', 'following'])
+          && validName(data().name) && data().group is string && data().group.size() >= 2 && data().group.size() <= 40
+          && data().get('bio', '') is string && data().get('bio', '').size() <= 160
+          && (data().get('avatarUrl', '') == resource.data.get('avatarUrl', '') || data().avatarUrl == '' || driveUrl(data().avatarUrl))
           && data().following is list && data().following.size() <= 1000
-          && (data().points == resource.data.points || (data().points == resource.data.points + 1 && rateOk())))
+          // смена @username: новый занят мной в том же batch, старый освобождён
+          && (data().handle == resource.data.handle
+              || (validHandle(data().handle) && getAfter(handleDoc(data().handle)).data.uid == uid()
+                  && !existsAfter(handleDoc(resource.data.handle)))))
+        // магазин бонусов: списание ровно стоимости купона, создаваемого в том же batch
+        || (signedIn() && userId == uid() && onlyChanged(['points', 'lastRedemption'])
+          && data().lastRedemption is string
+          && !exists(redemptionDoc(data().lastRedemption)) && existsAfter(redemptionDoc(data().lastRedemption))
+          && getAfter(redemptionDoc(data().lastRedemption)).data.uid == uid()
+          && data().points == resource.data.points - getAfter(redemptionDoc(data().lastRedemption)).data.cost
+          && data().points >= 0)
         // демо-аккаунт сам выставляет себе свою демо-роль (если профиль был создан раньше с другой ролью)
         || (signedIn() && userId == uid() && onlyChanged(['role', 'verified']) && demoRoleOk(data()))
         // администрация: роль, подтверждение преподавателя, баллы
@@ -204,7 +227,8 @@ service cloud.firestore {
       let t = request.resource.data.ticket;
       return isAdmin() && resource.data.ticket != null
         && onlyChanged(['ticket'])
-        && ticketDiff().hasOnly(['status', 'deadline', 'resolvedAt', 'official', 'afterImages'])
+        && ticketDiff().hasOnly(['status', 'deadline', 'resolvedAt', 'official', 'afterImages', 'helperId'])
+        && (t.get('helperId', null) == null || (t.helperId is string && exists(pub(t.helperId))))
         && (resource.data.type == 'lost'
               ? t.status in ['searching', 'found', 'returned']
               : t.status in ['accepted', 'review', 'resolved', 'rejected'])
@@ -299,13 +323,78 @@ service cloud.firestore {
       allow create: if hasProfile()
         && data().keys().hasOnly(['to', 'type', 'fromId', 'postId', 'payload', 'read', 'createdAt'])
         && data().to is string && data().to != uid() && exists(pub(data().to))
-        && data().type in ['like', 'reply', 'repost', 'quote', 'follow', 'status', 'official', 'ticket', 'confirm']
+        && data().type in ['like', 'reply', 'repost', 'quote', 'follow', 'status', 'official', 'ticket', 'confirm', 'points', 'prize']
         && (data().fromId == uid() || data().fromId == null)
         && data().read == false && data().createdAt == request.time
         && data().payload is map
-        && (!(data().type in ['status', 'official']) || isAdmin());
+        && (!(data().type in ['status', 'official', 'points', 'prize']) || isAdmin());
       allow update: if signedIn() && resource.data.to == uid() && onlyChanged(['read']) && data().read == true;
       allow delete: if signedIn() && resource.data.to == uid();
+    }
+
+    // ───────── уникальные @username ─────────
+    match /usernames/{name} {
+      allow read: if signedIn();                 // проверка «Бос / Бос емес» в реальном времени
+      allow create: if signedIn() && validHandle(name)
+        && data().keys().hasOnly(['uid']) && data().uid == uid()
+        && getAfter(pub(uid())).data.handle == name;
+      allow delete: if signedIn() && resource.data.uid == uid()
+        && getAfter(pub(uid())).data.handle != name;
+    }
+
+    // ───────── магазин бонусов («Дүкен») ─────────
+    // Цены должны совпадать с SHOP_ITEMS в web/lib/constants.ts
+    function itemCost(id) { return { 'snickers': 50, 'coffee': 40, 'stickers': 80, 'diploma': 150 }[id]; }
+    match /redemptions/{code} {
+      allow read: if signedIn() && (resource.data.uid == uid() || isAdmin());
+      allow create: if hasProfile()
+        && code.matches('^TRM-[A-Z0-9]{4}-[A-Z0-9]{4}$')
+        && data().keys().hasOnly(['uid', 'itemId', 'cost', 'code', 'status', 'createdAt'])
+        && data().uid == uid() && data().code == code
+        && data().itemId in ['snickers', 'coffee', 'stickers', 'diploma']
+        && data().cost == itemCost(data().itemId)
+        && data().status == 'pending' && data().createdAt == request.time
+        // баллы списаны в том же batch
+        && getAfter(pub(uid())).data.points == get(pub(uid())).data.points - data().cost
+        && getAfter(pub(uid())).data.lastRedemption == code;
+      // выдачу (или отмену с возвратом баллов) подтверждает admin
+      allow update: if isAdmin() && resource.data.status == 'pending'
+        && onlyChanged(['status', 'handledBy', 'handledAt'])
+        && data().status in ['issued', 'cancelled'] && data().handledBy == uid() && data().handledAt == request.time;
+    }
+
+    // ───────── личные сообщения ─────────
+    // chatId = uidA + '_' + uidB (по алфавиту); читать и писать могут только два участника
+    match /chats/{chatId} {
+      allow read: if signedIn() && uid() in resource.data.participants;
+      allow create: if hasProfile()
+        && data().keys().hasOnly(['participants', 'lastText', 'lastAt', 'lastSender', 'readAt', 'createdAt'])
+        && data().participants is list && data().participants.size() == 2
+        && uid() in data().participants
+        && data().participants[0] < data().participants[1]
+        && chatId == data().participants[0] + '_' + data().participants[1]
+        && exists(pub(data().participants[0])) && exists(pub(data().participants[1]))
+        && data().lastSender == uid() && data().lastAt == request.time && data().createdAt == request.time
+        && data().lastText is string && data().lastText.size() <= 200
+        && data().readAt is map && data().readAt.keys().hasOnly([uid()]);
+      allow update: if signedIn() && uid() in resource.data.participants
+        && onlyChanged(['lastText', 'lastAt', 'lastSender', 'readAt'])
+        && data().readAt is map && data().readAt.diff(resource.data.readAt).affectedKeys().hasOnly([uid()])
+        && (!changed().hasAny(['lastText', 'lastAt', 'lastSender'])
+            || (data().lastSender == uid() && data().lastAt == request.time
+                && data().lastText is string && data().lastText.size() <= 200));
+      allow delete: if false;
+
+      match /messages/{msgId} {
+        allow read: if signedIn() && uid() in get(chatDoc(chatId)).data.participants;
+        allow create: if signedIn() && uid() in getAfter(chatDoc(chatId)).data.participants
+          && data().keys().hasOnly(['from', 'text', 'createdAt'])
+          && data().from == uid()
+          && data().text is string && data().text.size() >= 1 && data().text.size() <= 2000
+          && data().createdAt == request.time
+          && getAfter(chatDoc(chatId)).data.lastAt == request.time;   // сводка диалога обновлена тем же batch
+        allow update, delete: if false;
+      }
     }
   }
 }

@@ -19,7 +19,8 @@ export const DEMO_ACCOUNTS = {
   teacher: 'demo.teacher@tarmak.kz',
   admin: 'demo.admin@tarmak.kz',
 } as const;
-export const DEMO_PASSWORD = process.env.NEXT_PUBLIC_DEMO_PASSWORD || '';
+/** Фолбэк, чтобы демо-вход работал без переменной окружения. Он виден в публичном репозитории — только для демо-аккаунтов. */
+export const DEMO_PASSWORD = process.env.NEXT_PUBLIC_DEMO_PASSWORD || 'TarmakDemo2026!';
 /** Профили, которые создаются при первом демо-входе (если seed.mjs не запускали). Email-ы продублированы в firestore.rules → demoRoleOk(). */
 export const DEMO_PROFILES = {
   student: { name: 'Демо Студент', group: 'ИК-923', phone: '+7 (700) 000-00-01', hue: 330 },
@@ -27,3 +28,23 @@ export const DEMO_PROFILES = {
   admin: { name: 'Демо Әкімшілік', group: 'Студенттік кеңес', phone: '+7 (700) 000-00-03', hue: 175 },
 } as const;
 export const RATE_LIMIT_SEC = 10;
+
+/** Баллы начисляются ТОЛЬКО когда заявка решена: автору подтверждённой проблемы и тому, кто помог */
+export const POINTS = { author: 10, helper: 15 } as const;
+
+/** Уровни в стиле 2ГИС: порог баллов, название (қаз/рус), привилегия уровня */
+export const LEVELS = [
+  { level: 1, min: 0, kz: 'Жаңадан келген', ru: 'Новичок', perk: { kz: 'Лента, өтініштер, сауалнамалар', ru: 'Лента, заявки и опросы' } },
+  { level: 2, min: 30, kz: 'Бақылаушы', ru: 'Наблюдатель', perk: { kz: 'Профильдегі деңгей белгісі', ru: 'Значок уровня в профиле' } },
+  { level: 3, min: 100, kz: 'Белсенді', ru: 'Активист', perk: { kz: 'Дүкендегі барлық сыйлықтар ашылады', ru: 'Открыты все призы магазина' } },
+  { level: 4, min: 250, kz: 'Колледж ревизоры', ru: 'Ревизор колледжа', perk: { kz: 'Студкеңес отырысына шақыру', ru: 'Приглашение на заседание студсовета' } },
+  { level: 5, min: 500, kz: 'Тармақ аңызы', ru: 'Легенда Тармака', perk: { kz: 'Айдың белсендісі тақтасында орын', ru: 'Место на доске «Активист месяца»' } },
+] as const;
+
+/** Магазин бонусов. Цены продублированы в firestore.rules → itemCost() */
+export const SHOP_ITEMS = [
+  { id: 'coffee', cost: 40, emoji: '☕', kz: 'Кофе / шай', ru: 'Кофе / чай' },
+  { id: 'snickers', cost: 50, emoji: '🍫', kz: 'Буфеттен Сникерс', ru: 'Сникерс в буфете' },
+  { id: 'stickers', cost: 80, emoji: '🏷️', kz: 'Колледж стикерпагы', ru: 'Стикерпак колледжа' },
+  { id: 'diploma', cost: 150, emoji: '📜', kz: 'Белсенділік үшін грамота', ru: 'Грамота за активность' },
+] as const;

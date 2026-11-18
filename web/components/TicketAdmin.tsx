@@ -1,10 +1,10 @@
 'use client';
-import { ImagePlus, Mail, Phone, Pin, ShieldCheck, X } from 'lucide-react';
+import { Handshake, ImagePlus, Mail, Phone, Pin, ShieldCheck, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { D, LOST_FLOW, TICKET_FLOW, TONE } from '@/lib/constants';
+import { D, LOST_FLOW, POINTS, SOLVED, TICKET_FLOW, TONE } from '@/lib/constants';
 import { fetchPrivate } from '@/lib/db';
 import type { TKey } from '@/lib/i18n';
-import { useApp } from '@/lib/store';
+import { useApp, useComments } from '@/lib/store';
 import type { Post, PrivateProfile } from '@/lib/types';
 import { uploadConfigured, uploadToDrive } from '@/lib/upload';
 import { compressImage, fmtDate, isOverdue, pad } from '@/lib/utils';
@@ -15,6 +15,12 @@ export function TicketAdmin({ post }: { post: Post }) {
   const tk = post.ticket!;
   const flow = post.type === 'lost' ? LOST_FLOW : TICKET_FLOW;
   const [txt, setTxt] = useState(tk.official?.text || '');
+  const { users, me } = useApp();
+  // кандидаты в «помощники» — участники обсуждения (кроме автора заявки)
+  const thread = useComments({ postIds: [post.id] }, me?.id || null);
+  const helpers = Array.from(new Set(thread.map(c => c.authorId).filter((a): a is string => !!a && a !== post.authorId && !!users[a])));
+  const [helper, setHelper] = useState<string>(tk.helperId || '');
+  const alreadySolved = SOLVED.includes(tk.status);
   const [contacts, setContacts] = useState<PrivateProfile | null | 'hidden'>(post.authorId ? null : 'hidden');
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -32,7 +38,7 @@ export function TicketAdmin({ post }: { post: Post }) {
       const urls = await Promise.all(files.map(async f => uploadToDrive(await compressImage(f, 1080, 0.8))));
       const imgs = [...tk.afterImages, ...urls];
       // фото результата обычно прикладывают вместе с «Шешілді»
-      if (post.type !== 'lost' && tk.status !== 'resolved') act.setStatus(post, 'resolved', imgs);
+      if (post.type !== 'lost' && tk.status !== 'resolved') act.setStatus(post, 'resolved', imgs, helper || null);
       else act.setAfterImages(post, imgs);
     } catch { act.toast(t('uploadFail')); }
     setUploading(false);
@@ -52,8 +58,18 @@ export function TicketAdmin({ post }: { post: Post }) {
 
       <span className="lbl">{t('setStatus')}</span>
       <div className="stb">
-        {flow.map(s => <button key={s} className={(tk.status === s ? 'on ' : '') + TONE[s]} onClick={() => act.setStatus(post, s)}>{t(('st_' + s) as TKey)}</button>)}
+        {flow.map(s => <button key={s} className={(tk.status === s ? 'on ' : '') + TONE[s]} onClick={() => act.setStatus(post, s, undefined, SOLVED.includes(s) ? helper || null : undefined)}>{t(('st_' + s) as TKey)}</button>)}
       </div>
+
+      {/* баллы — только при решении: автору +10, помощнику +15 */}
+      <span className="lbl"><Handshake size={12} style={{ display: 'inline', verticalAlign: '-1px', marginRight: 4 }} />{t('helperPick')}</span>
+      <div className="row">
+        <select className="inp" id={'helper-' + post.id} style={{ width: 'auto', flex: 1 }} value={helper} disabled={alreadySolved} onChange={e => setHelper(e.target.value)}>
+          <option value="">{t('helperNone')}</option>
+          {helpers.map(h => <option key={h} value={h}>{users[h].name} · @{users[h].handle}</option>)}
+        </select>
+      </div>
+      <div className="fnote" style={{ marginTop: 4 }}>{t('pointsHow')} (+{POINTS.author} / +{POINTS.helper})</div>
 
       <span className="lbl">{t('afterPhoto')}</span>
       <div className="row">
