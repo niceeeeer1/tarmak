@@ -1,12 +1,12 @@
 'use client';
-import { Box, Check, Clock, Heart, Lightbulb, MapPin, Megaphone, MessageCircle, Pin, Repeat2, Send, ShieldCheck, ThumbsUp, Trash2, TriangleAlert } from 'lucide-react';
+import { Box, Check, Clock, Handshake, Heart, Lightbulb, MapPin, Megaphone, MessageCircle, Pin, Repeat2, Send, ShieldCheck, ThumbsUp, Trash2, TriangleAlert } from 'lucide-react';
 import { useState } from 'react';
 import { CLOSED, TONE } from '@/lib/constants';
 import type { TKey } from '@/lib/i18n';
 import { useApp } from '@/lib/store';
 import type { Comment, Post, Ticket } from '@/lib/types';
 import { fmtDate, isOverdue, pad } from '@/lib/utils';
-import { Avatar, useAgo, VBadge } from './ui';
+import { Avatar, PHOTO_CLS, useAgo, VBadge } from './ui';
 
 export function PollBox({ post }: { post: Post }) {
   const { act, t } = useApp();
@@ -48,6 +48,7 @@ export function TicketMeta({ post, full }: { post: Post; full?: boolean }) {
         <span className={'chip ' + TONE[tk.status]}>{(tk.status === 'resolved' || tk.status === 'returned') && <Check size={12} strokeWidth={3} />}{t(('st_' + tk.status) as TKey)}</span>
         {over && <span className="chip solid-bad"><TriangleAlert size={12} strokeWidth={2.6} />{t('overdue')}</span>}
         {teacher && <span className="chip info"><ShieldCheck size={12} strokeWidth={2.4} />{t('teacherConfirmed')}</span>}
+        {tk.helperId && users[tk.helperId] && <span className="chip ok"><Handshake size={12} strokeWidth={2.2} />{t('helpedBy')}: {users[tk.helperId].name}</span>}
       </div>
       <div className="meta">
         <span><MapPin size={13} />{loc}</span>
@@ -74,14 +75,15 @@ export function OfficialReply({ tk, clamp }: { tk: Ticket | null; clamp?: boolea
 
 /** Фото «До / После» для решённой заявки: до — фото автора, после — фото администрации. */
 export function BeforeAfter({ post }: { post: Post }) {
-  const { t } = useApp();
+  const { t, act } = useApp();
   const after = post.ticket?.afterImages || [];
   if (!after.length) return null;
   const before = post.images[0];
+  const all = [...(before ? [before] : []), after[0]];
   return (
     <div className="ba" onClick={e => e.stopPropagation()}>
-      {before && <figure><img src={before} alt="" referrerPolicy="no-referrer" loading="lazy" /><figcaption>{t('before')}</figcaption></figure>}
-      <figure className="after"><img src={after[0]} alt="" referrerPolicy="no-referrer" loading="lazy" /><figcaption>{t('after')}</figcaption></figure>
+      {before && <figure><img src={before} alt="" referrerPolicy="no-referrer" loading="lazy" className={PHOTO_CLS} onClick={() => act.openLightbox(all, 0)} /><figcaption>{t('before')}</figcaption></figure>}
+      <figure className="after"><img src={after[0]} alt="" referrerPolicy="no-referrer" loading="lazy" className={PHOTO_CLS} onClick={() => act.openLightbox(all, all.length - 1)} /><figcaption>{t('after')}</figcaption></figure>
     </div>
   );
 }

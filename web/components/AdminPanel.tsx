@@ -1,7 +1,7 @@
 'use client';
-import { Clock, MapPin, ShieldCheck, TriangleAlert, User as UserIcon, X } from 'lucide-react';
+import { Check, Clock, Gift, MapPin, ShieldCheck, TriangleAlert, User as UserIcon, X } from 'lucide-react';
 import { useState } from 'react';
-import { ALL_CATS, CLOSED, TONE, TONE_VAR } from '@/lib/constants';
+import { ALL_CATS, CLOSED, SHOP_ITEMS, TONE, TONE_VAR } from '@/lib/constants';
 import type { TKey } from '@/lib/i18n';
 import { useApp } from '@/lib/store';
 import type { TicketStatus } from '@/lib/types';
@@ -15,7 +15,7 @@ const STATUS_ORDER: TicketStatus[] = ['accepted', 'review', 'searching', 'found'
 
 /** Дашборд: KPI, T = Σtᵢ / n, разбивка по категориям и статусам, управление заявками. */
 export function AdminPanel() {
-  const { posts, users, stats, t, lang, now, go, role, act } = useApp();
+  const { posts, users, stats, t, lang, now, go, role, act, prizeQueue } = useApp();
   const [f, setF] = useState<'open' | 'overdue' | 'closed' | 'all'>('open');
   const [open, setOpen] = useState<string | null>(null);
   if (role !== 'admin') return <div><SubBar title={t('adminPanel')} /><div className="empty">403</div></div>;
@@ -50,6 +50,24 @@ export function AdminPanel() {
       <div className="panel"><h3>{t('byStatus')}</h3>
         <div className="stack">{byS.map(x => <i key={x.s} style={{ flex: x.n, background: TONE_VAR[TONE[x.s]], opacity: x.s === 'rejected' ? 0.5 : 1 }} />)}</div>
         <div className="legend">{byS.map(x => <span key={x.s}><i style={{ background: TONE_VAR[TONE[x.s]], opacity: x.s === 'rejected' ? 0.5 : 1 }} />{t(('st_' + x.s) as TKey)} · {x.n}</span>)}</div>
+      </div>
+      {/* заявки на выдачу призов из магазина бонусов */}
+      <div className="panel"><h3><Gift size={15} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 6 }} />{t('prizeRequests')} · {prizeQueue.length}</h3>
+        {prizeQueue.map(r => {
+          const it = SHOP_ITEMS.find(i => i.id === r.itemId); const who = users[r.uid];
+          return (
+            <div key={r.code} className="vrow">
+              <span style={{ fontSize: 24 }} aria-hidden="true">{it?.emoji}</span>
+              <div className="ui"><b style={{ fontWeight: 600 }}>{it?.[lang]}</b> · {who?.name || '—'}
+                <div className="fnote" style={{ margin: 0 }}><span className="code" style={{ userSelect: 'all' }}>{r.code}</span> · {fmtDate(r.createdAt, lang)} · −{r.cost}</div></div>
+              <div className="flex gap-1">
+                <button className="btn sm pri" onClick={() => act.handleRedemption(r, true)}><Check size={14} />{t('issue')}</button>
+                <button className="btn sm" aria-label={t('cancelCoupon')} title={t('cancelCoupon')} onClick={() => act.handleRedemption(r, false)}><X size={14} /></button>
+              </div>
+            </div>
+          );
+        })}
+        {!prizeQueue.length && <div className="fnote" style={{ margin: 0 }}>—</div>}
       </div>
       <QrGenerator />
       {Object.values(users).some(u => u.role === 'teacher') && (

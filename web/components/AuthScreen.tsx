@@ -16,7 +16,7 @@ const errText = (code: string) => code.replace('auth/', '').replace(/-/g, ' ');
 const NO_USER = ['auth/user-not-found', 'auth/invalid-credential', 'auth/invalid-login-credentials'];
 
 /**
- * Демо-вход по ролям (виден только при NEXT_PUBLIC_DEMO_MODE=true).
+ * Демо-вход по ролям — только в профиле (Profile.tsx), при NEXT_PUBLIC_DEMO_MODE=true. На экране входа его нет.
  * Первый клик: аккаунта нет → createUserWithEmailAndPassword + профиль с ролью (teacher сразу verified).
  * Следующие клики: обычный вход. seed.mjs запускать не нужно.
  */
@@ -24,7 +24,6 @@ export function DemoRoleSwitch({ current }: { current?: Role }) {
   const { t, act, demoBusy } = useApp();
   if (!DEMO) return null;
   const login = async (r: Role) => {
-    if (DEMO_PASSWORD.length < 6) { act.toast(t('demoNoPassword')); return; }
     const email = DEMO_ACCOUNTS[r];
     act.setDemoBusy(true);
     try {
@@ -119,7 +118,6 @@ export function AuthScreen() {
       </form>
       {err && <div className="err">{err}</div>}
       {info && <div className="hint">{info}</div>}
-      {DEMO && <><span className="lbl">{t('demoLogin')}</span><DemoRoleSwitch /></>}
     </div>
   );
 }

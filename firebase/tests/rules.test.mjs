@@ -2,7 +2,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import fs from 'node:fs';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { doc, setDoc, getDoc, updateDoc, writeBatch, runTransaction, serverTimestamp, arrayUnion, increment, collection, query, where, getDocs, deleteField } from 'firebase/firestore';
+import { doc, setDoc, getDoc, updateDoc, deleteDoc, writeBatch, runTransaction, serverTimestamp, arrayUnion, increment, collection, query, where, getDocs, deleteField } from 'firebase/firestore';
 
 let env;
 const phone = '+7 (701) 234-56-78';
@@ -24,6 +24,7 @@ async function register(db, uid, role = 'student', over = {}) {
   const b = writeBatch(db);
   b.set(doc(db, 'users_public', uid), { name: 'Айгерім Серікова', handle: uid + '_ik', role, group: 'ИК-923', avatar: '', hue: 10, points: 0, verified: false, following: [], createdAt: serverTimestamp(), ...over.pub });
   b.set(doc(db, 'users_private', uid), { email: uid + '@x.kz', phone, tickets: [], createdAt: serverTimestamp(), ...over.priv });
+  b.set(doc(db, 'usernames', (over.pub && over.pub.handle) || uid + '_ik'), { uid });
   return b.commit();
 }
 const base = (uid, o = {}) => ({ type: 'talk', authorId: uid, anon: false, text: 'Сәлем', images: [], quoteId: null, repostOf: null, chainOf: null, chainIdx: 0, likedBy: [], repostedBy: [], replyCount: 0, poll: null, ticket: null, createdAt: serverTimestamp(), ...o });
@@ -149,11 +150,10 @@ test('комментарии и баллы активности', async () => {
   const b = writeBatch(db);
   b.set(doc(db, 'comments/c1'), { postId: 'p1', parentId: null, authorId: 's1', text: 'Жауап', likedBy: [], createdAt: serverTimestamp() });
   b.set(doc(db, 'rate/s1'), { lastAt: serverTimestamp() });
-  b.update(doc(db, 'users_public/s1'), { points: increment(1) });
   b.update(doc(db, 'posts/p1'), { replyCount: increment(1) });
   await assertSucceeds(b.commit());
   await assertFails(updateDoc(doc(db, 'posts/p1'), { replyCount: increment(1) }));             // накрутка счётчика без комментария
-  await assertFails(updateDoc(doc(db, 'users_public/s1'), { points: increment(1) }));          // балл без публикации
+  await assertFails(updateDoc(doc(db, 'users_public/s1'), { points: increment(1) }));          // баллы сам себе — нельзя
   await assertSucceeds(updateDoc(doc(as('admin1', 'admin@x.kz'), 'users_public/s1'), { points: increment(10), verified: false }));
 });
 
@@ -196,8 +196,9 @@ test('демо-роли: teacher (verified) и admin — только для д�
   const demo = (uid, email, role, verified) => {
     const db = as(uid, email);
     const b = writeBatch(db);
-    b.set(doc(db, 'users_public', uid), { name: 'Демо', handle: 'demo_' + role, role, group: 'Демо-топ', avatar: '', hue: 1, points: 0, verified, following: [], createdAt: serverTimestamp() });
+    b.set(doc(db, 'users_public', uid), { name: 'Демо', handle: 'demo_' + role + uid, role, group: 'Демо-топ', avatar: '', hue: 1, points: 0, verified, following: [], createdAt: serverTimestamp() });
     b.set(doc(db, 'users_private', uid), { email, phone, tickets: [], createdAt: serverTimestamp() });
+    b.set(doc(db, 'usernames', 'demo_' + role + uid), { uid });
     return b.commit();
   };
   await assertFails(demo('x1', 'hacker@x.kz', 'admin', true));                              // обычный пользователь не выдаёт себе admin
@@ -215,4 +216,111 @@ test('демо-роли: teacher (verified) и admin — только для д�
   await register(as('s9'), 's9', 'teacher');
   await assertFails(updateDoc(doc(as('s9'), 'users_public/s9'), { verified: true }));       // обычный преподаватель — нет
   await assertFails(updateDoc(doc(as('s9'), 'users_public/s9'), { role: 'admin', verified: true }));
+});
+
+test('@username уникален: занять, сменить, освободить', async () => {
+  await register(as('s1'), 's1', 'student', { pub: { handle: 'aigerim' } });
+  await assertFails(register(as('s2'), 's2', 'student', { pub: { handle: 'aigerim' } }));     // уже занят
+  await assertSucceeds(register(as('s2'), 's2', 'student', { pub: { handle: 'aigerim2' } }));
+  await assertSucceeds(getDoc(doc(as('s2'), 'usernames/aigerim')));                           // проверка «Бос емес»
+  const rename = (db, uid, from, to, release = true) => {
+    const b = writeBatch(db);
+    b.update(doc(db, 'users_public', uid), { handle: to });
+    b.set(doc(db, 'usernames', to), { uid });
+    if (release) b.delete(doc(db, 'usernames', from));
+    return b.commit();
+  };
+  await assertFails(rename(as('s2'), 's2', 'aigerim2', 'aigerim'));                          // чужой
+  await assertFails(rename(as('s2'), 's2', 'aigerim2', 'damir', false));                     // старый не освобождён
+  await assertFails(rename(as('s2'), 's2', 'aigerim2', 'Bad Name!'));
+  await assertSucceeds(rename(as('s2'), 's2', 'aigerim2', 'damir'));
+  await assertFails(deleteDoc(doc(as('s2'), 'usernames/aigerim')));                           // чужой юзернейм не удалить
+  await assertFails(updateDoc(doc(as('s2'), 'users_public/s2'), { handle: 'nobody_claimed' })); // без usernames/{handle}
+});
+
+test('редактирование профиля: имя, группа, о себе, аватар с Диска', async () => {
+  await register(as('s1'), 's1');
+  const db = as('s1');
+  await assertSucceeds(updateDoc(doc(db, 'users_public/s1'), { name: 'Айгерім С.', group: 'ИК-924', bio: 'Кітап оқимын 📚',
+    avatarUrl: 'https://drive.google.com/thumbnail?id=abc_1&sz=w1000' }));
+  await assertFails(updateDoc(doc(db, 'users_public/s1'), { avatarUrl: 'https://evil.com/a.png' }));
+  await assertFails(updateDoc(doc(db, 'users_public/s1'), { bio: 'x'.repeat(161) }));
+  await assertFails(updateDoc(doc(db, 'users_public/s1'), { role: 'admin' }));
+  await assertFails(updateDoc(doc(db, 'users_public/s1'), { points: 999 }));
+});
+
+test('баллы: admin начисляет за решённую заявку автору и помощнику', async () => {
+  await register(as('s1'), 's1'); await register(as('s2'), 's2');
+  await ticket(as('s1'), 's1', 't1');
+  const adb = as('admin1', 'admin@x.kz');
+  const b = writeBatch(adb);
+  b.update(doc(adb, 'posts/t1'), { 'ticket.status': 'resolved', 'ticket.resolvedAt': serverTimestamp(), 'ticket.helperId': 's2' });
+  b.update(doc(adb, 'users_public/s1'), { points: increment(10) });
+  b.update(doc(adb, 'users_public/s2'), { points: increment(15) });
+  await assertSucceeds(b.commit());
+  await assertFails(updateDoc(doc(adb, 'posts/t1'), { 'ticket.helperId': 'ghost' }));          // несуществующий помощник
+  await assertFails(updateDoc(doc(as('s2'), 'posts/t1'), { 'ticket.helperId': 's1' }));        // не admin
+  await assertSucceeds(setDoc(doc(adb, 'notifications/np'), { to: 's2', type: 'points', fromId: 'admin1', postId: 't1', payload: { points: 15 }, read: false, createdAt: serverTimestamp() }));
+  await assertFails(setDoc(doc(as('s1'), 'notifications/nq'), { to: 's2', type: 'points', fromId: 's1', postId: 't1', payload: {}, read: false, createdAt: serverTimestamp() }));
+});
+
+test('магазин бонусов: списание ровно стоимости, выдача — admin', async () => {
+  await register(as('s1'), 's1'); await register(as('s2'), 's2');
+  await env.withSecurityRulesDisabled(c => updateDoc(doc(c.firestore(), 'users_public/s1'), { points: 60 }));
+  const db = as('s1');
+  const buy = (code, itemId, cost, minus = cost) => {
+    const b = writeBatch(db);
+    b.set(doc(db, 'redemptions', code), { uid: 's1', itemId, cost, code, status: 'pending', createdAt: serverTimestamp() });
+    b.update(doc(db, 'users_public/s1'), { points: increment(-minus), lastRedemption: code });
+    return b.commit();
+  };
+  await assertFails(buy('TRM-AAAA-0001', 'diploma', 150));                                    // не хватает баллов
+  await assertFails(buy('TRM-AAAA-0002', 'snickers', 1, 1));                                  // подделка цены
+  await assertFails(buy('TRM-AAAA-0003', 'snickers', 50, 10));                                // списано меньше
+  await assertSucceeds(buy('TRM-AAAA-0004', 'snickers', 50));
+  await assertFails(updateDoc(doc(db, 'users_public/s1'), { points: increment(-5), lastRedemption: 'TRM-AAAA-0004' })); // без нового купона
+  await assertFails(getDoc(doc(as('s2'), 'redemptions/TRM-AAAA-0004')));
+  await assertFails(updateDoc(doc(db, 'redemptions/TRM-AAAA-0004'), { status: 'issued', handledBy: 's1', handledAt: serverTimestamp() }));
+  const adb = as('admin1', 'admin@x.kz');
+  await assertSucceeds(getDocs(query(collection(adb, 'redemptions'), where('status', '==', 'pending'))));
+  await assertSucceeds(updateDoc(doc(adb, 'redemptions/TRM-AAAA-0004'), { status: 'issued', handledBy: 'admin1', handledAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(adb, 'redemptions/TRM-AAAA-0004'), { status: 'cancelled', handledBy: 'admin1', handledAt: serverTimestamp() })); // уже выдан
+});
+
+test('личные сообщения: только два участника', async () => {
+  await register(as('a'), 'a'); await register(as('b'), 'b'); await register(as('c'), 'c');
+  const send = (db, from, chatId, text, create) => {
+    const bt = writeBatch(db);
+    const summary = { lastText: text.slice(0, 200), lastAt: serverTimestamp(), lastSender: from, ['readAt.' + from]: serverTimestamp() };
+    if (create) bt.set(doc(db, 'chats', chatId), { participants: chatId.split('_'), lastText: text, lastAt: serverTimestamp(), lastSender: from, readAt: { [from]: serverTimestamp() }, createdAt: serverTimestamp() });
+    else bt.update(doc(db, 'chats', chatId), summary);
+    bt.set(doc(collection(db, 'chats', chatId, 'messages')), { from, text, createdAt: serverTimestamp() });
+    return bt.commit();
+  };
+  await assertFails(send(as('c'), 'c', 'a_b', 'Сәлем', true));                                // посторонний создаёт чужой чат
+  await assertFails(send(as('a'), 'a', 'b_a', 'Сәлем', true));                                // неверный порядок id
+  await assertSucceeds(send(as('a'), 'a', 'a_b', 'Сәлем!', true));
+  await assertSucceeds(send(as('b'), 'b', 'a_b', 'Сәлем, қалайсың?', false));
+  await assertFails(getDoc(doc(as('c'), 'chats/a_b')));
+  await assertFails(getDocs(collection(as('c'), 'chats/a_b/messages')));
+  await assertSucceeds(getDocs(collection(as('a'), 'chats/a_b/messages')));
+  await assertSucceeds(getDocs(query(collection(as('b'), 'chats'), where('participants', 'array-contains', 'b'))));
+  await assertFails(send(as('c'), 'c', 'a_b', 'взлом', false));
+  await assertFails(updateDoc(doc(as('a'), 'chats/a_b'), { 'readAt.b': serverTimestamp() }));   // чужая отметка прочтения
+  await assertSucceeds(updateDoc(doc(as('a'), 'chats/a_b'), { 'readAt.a': serverTimestamp() }));
+  // сообщение от чужого имени
+  const db = as('a'); const bt = writeBatch(db);
+  bt.update(doc(db, 'chats', 'a_b'), { lastText: 'x', lastAt: serverTimestamp(), lastSender: 'a' });
+  bt.set(doc(collection(db, 'chats', 'a_b', 'messages')), { from: 'b', text: 'x', createdAt: serverTimestamp() });
+  await assertFails(bt.commit());
+});
+
+test('удаление ответа к уже удалённому посту (сирота)', async () => {
+  await register(as('s1'), 's1');
+  await post(as('s1'), 's1', 'p9');
+  await env.withSecurityRulesDisabled(async c => {
+    await setDoc(doc(c.firestore(), 'comments/orphan'), { postId: 'p9', parentId: null, authorId: 's1', text: 'x', likedBy: [], createdAt: new Date() });
+    await deleteDoc(doc(c.firestore(), 'posts/p9'));
+  });
+  await assertSucceeds(deleteDoc(doc(as('s1'), 'comments/orphan')));
 });

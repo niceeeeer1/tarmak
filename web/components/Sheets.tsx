@@ -1,10 +1,8 @@
 'use client';
-import { Copy, LayoutDashboard, Link2, LogOut, Quote, Repeat2, ShieldCheck, Trash2 } from 'lucide-react';
-import { DEMO } from '@/lib/constants';
+import { Copy, LayoutDashboard, Link2, LogOut, MessageCircle, Quote, Repeat2, ShieldCheck, Trash2 } from 'lucide-react';
 import type { TKey } from '@/lib/i18n';
 import { useApp } from '@/lib/store';
 import { pad } from '@/lib/utils';
-import { DemoRoleSwitch } from './AuthScreen';
 
 export function Sheets() {
   const { sheet, setSheet, posts, users, t, me, role, act, setComposer, lang, setLang, theme, setTheme, go } = useApp();
@@ -39,6 +37,7 @@ export function Sheets() {
     body = (
       <div className="menu">
         <button onClick={() => { act.copy(`${origin}/?p=${p.id}`, t('linkCopied')); close(); }}>{t('copyLink')}<Link2 size={20} /></button>
+        {p.authorId && !p.anon && me && p.authorId !== me.id && <button onClick={() => { close(); go.chat(p.authorId!); }}>{t('writeAuthor')}<MessageCircle size={20} /></button>}
         {role === 'admin' && p.ticket && <button onClick={() => { close(); go.post(p.id); }}>{t('openAdmin')}<ShieldCheck size={20} /></button>}
         {(role === 'admin' || p.mine) && <button className="danger" onClick={() => { act.deletePost(p); close(); }}>{t('delete')}<Trash2 size={20} /></button>}
       </div>
@@ -51,7 +50,6 @@ export function Sheets() {
       <div className="seg"><button className={lang === 'kz' ? 'on' : ''} onClick={() => setLang('kz')}>Қазақша</button><button className={lang === 'ru' ? 'on' : ''} onClick={() => setLang('ru')}>Русский</button></div>
       <span className="lbl">{t('theme')}</span>
       <div className="seg">{(['system', 'light', 'dark'] as const).map(k => <button key={k} className={theme === k ? 'on' : ''} onClick={() => setTheme(k)}>{t(k)}</button>)}</div>
-      {DEMO && <><span className="lbl">{t('demoRole')}</span><DemoRoleSwitch current={role} /></>}
       <div style={{ height: 14 }} />
       <div className="menu">
         {role === 'admin' && <button onClick={() => { close(); go.admin(); }}>{t('adminPanel')}<LayoutDashboard size={20} /></button>}

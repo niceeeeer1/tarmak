@@ -13,7 +13,9 @@ import { Profile } from './Profile';
 import { ProfileSetupModal } from './ProfileSetupModal';
 import { Search } from './Search';
 import { Sheets } from './Sheets';
-import { Logo } from './ui';
+import { ChatList, ChatView } from './Chats';
+import { Shop } from './Shop';
+import { Lightbox, Logo } from './ui';
 
 const QR_KEY = 'tarmak.qr';
 const BUILDINGS = ['main', 'b2', 'dorm', 'gym'];
@@ -65,6 +67,9 @@ export function AppShell() {
     case 'search': body = <Search />; break;
     case 'notif': body = <Notifications key={me.id} />; break;
     case 'me': body = <Profile key={'me' + me.id} uid={me.id} />; break;
+    case 'chats': body = <ChatList key={vkey} />; break;
+    case 'chat': body = <ChatView key={vkey} uid={view.uid} />; break;
+    case 'shop': body = <Shop key={vkey} />; break;
     default: body = <Feed />;
   }
   return (
@@ -74,6 +79,7 @@ export function AppShell() {
       <BottomNav />
       {composer && <Composer init={composer} onClose={() => setComposer(null)} />}
       <Sheets />
+      <Lightbox />
       {toastEl}
     </>
   );
