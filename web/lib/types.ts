@@ -4,10 +4,18 @@ export type TicketStatus = 'accepted' | 'review' | 'resolved' | 'rejected' | 'se
 export type Category = 'cleaning' | 'furniture' | 'heat' | 'wc' | 'canteen' | 'idea' | 'lost';
 export type Building = 'main' | 'b2' | 'dorm' | 'gym';
 
+/** Настройки уведомлений. Нет поля или ключа → категория включена (prefOn). Хранятся в users_public: отправителю нужно знать, можно ли уведомлять. */
+export interface NotificationPrefs {
+  messages: boolean; mentions: boolean; replies: boolean; status: boolean;
+  lost: boolean; suggestion: boolean; complaint: boolean; news: boolean;
+}
+export type NotifPrefKey = keyof NotificationPrefs;
+
 /** users_public/{uid} — видят все вошедшие */
 export interface User {
   id: string; name: string; handle: string; role: Role; group: string; avatar: string; bio: string; hue: number;
   points: number; verified: boolean; following: string[]; followers: number;
+  notifPrefs: Partial<NotificationPrefs>;
 }
 /** users_private/{uid} — только владелец и admin */
 export interface PrivateProfile { email: string; phone: string; tickets: string[] }
@@ -32,10 +40,12 @@ export interface Comment {
   id: string; postId: string; parentId: string | null; authorId: string | null; anon: boolean; mine: boolean;
   text: string; createdAt: number; likedBy: string[]; pending?: boolean;
 }
-export type NotifType = 'like' | 'reply' | 'repost' | 'quote' | 'follow' | 'status' | 'official' | 'ticket' | 'confirm' | 'points' | 'prize';
+export type NotifType = 'like' | 'reply' | 'mention' | 'repost' | 'quote' | 'follow' | 'status' | 'official' | 'ticket' | 'confirm' | 'points' | 'prize'
+  | 'topic' | 'message';   // topic/message — локальные события из realtime-подписок (в Firestore не пишутся)
 export interface Notif {
   id: string; type: NotifType; fromId: string | null; postId: string | null;
-  payload: { status?: TicketStatus; num?: number; anon?: boolean; points?: number; item?: string; prize?: 'issued' | 'cancelled' }; read: boolean; createdAt: number;
+  payload: { status?: TicketStatus; num?: number; anon?: boolean; points?: number; item?: string; prize?: 'issued' | 'cancelled'; category?: NotifPrefKey; text?: string; chatWith?: string };
+  read: boolean; createdAt: number; local?: boolean;
 }
 export interface ComposerInit {
   quoteId?: string; type?: Draft['type']; room?: string; building?: Building; floor?: string; restore?: Draft;
@@ -54,7 +64,7 @@ export interface Draft {
 export type View =
   | { name: 'home' } | { name: 'search' } | { name: 'notif' } | { name: 'me' } | { name: 'admin' }
   | { name: 'post'; id: string; focus?: boolean } | { name: 'profile'; uid: string }
-  | { name: 'chats' } | { name: 'chat'; uid: string } | { name: 'shop' };
+  | { name: 'chats' } | { name: 'chat'; uid: string } | { name: 'shop' } | { name: 'notifSettings' };
 export type Sheet = { kind: 'repost' | 'share' | 'more'; id: string } | { kind: 'settings' } | { kind: 'editProfile' } | null;
 
 /** chats/{a_b} — сводка диалога; сообщения в chats/{a_b}/messages */

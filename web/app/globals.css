@@ -346,3 +346,19 @@ textarea.inp{resize:vertical;min-height:64px;line-height:1.4}
 .bubble.mine{background:var(--fg);color:var(--bg)}
 .bubble.pending{opacity:.6}
 .bubble .bt{display:inline-block;margin-left:8px;font-size:11px;opacity:.6;vertical-align:-1px}
+/* настройки уведомлений */
+.nset{padding:6px 0 10px}
+.nset-push{border:1px solid var(--line);border-radius:14px;padding:12px;margin:12px 0 4px}
+.nset-push .fnote{margin-top:8px}
+.nset-list{border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.nset-row{display:flex;align-items:center;gap:12px;width:100%;padding:12px;text-align:left;border-bottom:1px solid var(--line);transition:background .15s}
+.nset-row:last-child{border-bottom:0}
+.nset-row:hover{background:var(--surface)}
+.nset-row.off .nset-ic{color:var(--muted);background:var(--surface)}
+.nset-ic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex:none;background:var(--info-bg);color:var(--info)}
+.nset-tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.nset-tx b{font-weight:600;font-size:14.5px}
+.nset-tx span{color:var(--muted);font-size:12.5px}
+.nset-row .sw{flex:none}
+.nav .badge{top:6px;right:10px}
+.toast.act{pointer-events:auto;cursor:pointer;text-align:left}
