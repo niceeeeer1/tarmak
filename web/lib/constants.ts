@@ -29,6 +29,15 @@ export const DEMO_PROFILES = {
 } as const;
 export const RATE_LIMIT_SEC = 10;
 
+/** 8 категорий уведомлений (порядок — как на экране настроек). Должны совпадать с validPrefs() в firestore.rules */
+export const NOTIF_KEYS = ['messages', 'mentions', 'replies', 'status', 'lost', 'suggestion', 'complaint', 'news'] as const;
+/** тип поста → категория «новые публикации» */
+export const TOPIC_OF = { lost: 'lost', idea: 'suggestion', complaint: 'complaint', talk: 'news' } as const;
+/** тип уведомления в Firestore → категория настроек (остальные типы, например лайки, не отключаются) */
+export const NOTIF_CATEGORY: Partial<Record<string, 'replies' | 'mentions' | 'status' | 'messages'>> = {
+  reply: 'replies', mention: 'mentions', status: 'status', official: 'status', points: 'status', prize: 'status', message: 'messages',
+};
+
 /** Баллы начисляются ТОЛЬКО когда заявка решена: автору подтверждённой проблемы и тому, кто помог */
 export const POINTS = { author: 10, helper: 15 } as const;
 

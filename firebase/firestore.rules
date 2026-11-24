@@ -34,6 +34,14 @@ service cloud.firestore {
     function redemptionDoc(c) { return /databases/$(database)/documents/redemptions/$(c); }
     function chatDoc(id) { return /databases/$(database)/documents/chats/$(id); }
     function validHandle(h) { return h is string && h.matches('^[a-z0-9_.]{3,30}$'); }
+    // Настройки уведомлений: 8 категорий, только true/false; отсутствующий ключ = включено
+    function validPrefs(p) {
+      return p is map
+        && p.keys().hasOnly(['messages', 'mentions', 'replies', 'status', 'lost', 'suggestion', 'complaint', 'news'])
+        && p.values().toSet().difference([true, false].toSet()).size() == 0;
+    }
+    // включена ли у получателя категория (поля нет или ключа нет → true)
+    function prefOn(to, cat) { return get(pub(to)).data.get('notifPrefs', {}).get(cat, true) != false; }
     function hasProfile() { return signedIn() && exists(pub(uid())); }
     function myRole() { return get(pub(uid())).data.role; }
     function isAdmin() { return hasProfile() && myRole() == 'admin'; }
@@ -76,7 +84,8 @@ service cloud.firestore {
       allow read: if signedIn();
       // создаётся при обязательной регистрации вместе с users_private (одним batch)
       allow create: if signedIn() && userId == uid()
-        && data().keys().hasOnly(['name', 'handle', 'role', 'group', 'avatar', 'avatarUrl', 'bio', 'hue', 'points', 'verified', 'following', 'createdAt'])
+        && data().keys().hasOnly(['name', 'handle', 'role', 'group', 'avatar', 'avatarUrl', 'bio', 'hue', 'points', 'verified', 'following', 'notifPrefs', 'createdAt'])
+        && validPrefs(data().get('notifPrefs', {}))
         && validName(data().name)
         // @username уникален: в том же batch занят usernames/{handle} = { uid }
         && validHandle(data().handle) && getAfter(handleDoc(data().handle)).data.uid == userId
@@ -95,7 +104,8 @@ service cloud.firestore {
         // владелец: имя, @username, группа, «о себе», аватар (только ссылка Google Диска), подписки.
         // Баллы сам себе начислять НЕЛЬЗЯ — только admin за решённую заявку.
         (signedIn() && userId == uid()
-          && onlyChanged(['name', 'handle', 'group', 'bio', 'avatarUrl', 'following'])
+          && onlyChanged(['name', 'handle', 'group', 'bio', 'avatarUrl', 'following', 'notifPrefs'])
+          && validPrefs(data().get('notifPrefs', {}))
           && validName(data().name) && data().group is string && data().group.size() >= 2 && data().group.size() <= 40
           && data().get('bio', '') is string && data().get('bio', '').size() <= 160
           && (data().get('avatarUrl', '') == resource.data.get('avatarUrl', '') || data().avatarUrl == '' || driveUrl(data().avatarUrl))
@@ -323,11 +333,15 @@ service cloud.firestore {
       allow create: if hasProfile()
         && data().keys().hasOnly(['to', 'type', 'fromId', 'postId', 'payload', 'read', 'createdAt'])
         && data().to is string && data().to != uid() && exists(pub(data().to))
-        && data().type in ['like', 'reply', 'repost', 'quote', 'follow', 'status', 'official', 'ticket', 'confirm', 'points', 'prize']
+        && data().type in ['like', 'reply', 'mention', 'repost', 'quote', 'follow', 'status', 'official', 'ticket', 'confirm', 'points', 'prize']
         && (data().fromId == uid() || data().fromId == null)
         && data().read == false && data().createdAt == request.time
         && data().payload is map
-        && (!(data().type in ['status', 'official', 'points', 'prize']) || isAdmin());
+        && (!(data().type in ['status', 'official', 'points', 'prize']) || isAdmin())
+        // уважаем настройки получателя: отключённую категорию создать нельзя
+        && (data().type != 'reply' || prefOn(data().to, 'replies'))
+        && (data().type != 'mention' || prefOn(data().to, 'mentions'))
+        && (!(data().type in ['status', 'official', 'points', 'prize']) || prefOn(data().to, 'status'));
       allow update: if signedIn() && resource.data.to == uid() && onlyChanged(['read']) && data().read == true;
       allow delete: if signedIn() && resource.data.to == uid();
     }

@@ -7,8 +7,10 @@ import * as DB from './db';
 import { auth, db, firebaseConfigured } from './firebase';
 import { I18N, type Lang, type TKey } from './i18n';
 import { computeStats } from './stats';
-import type { Chat, Redemption, ShopItemId, Comment, ComposerInit, Draft, Me, Notif, Post, PrivateProfile, Role, Sheet, Stats, TicketStatus, User, View } from './types';
-import { chatIdFor, copyText, pad } from './utils';
+import type { Chat, NotifPrefKey, NotificationPrefs, Redemption, ShopItemId, Comment, ComposerInit, Draft, Me, Notif, Post, PrivateProfile, Role, Sheet, Stats, TicketStatus, User, View } from './types';
+import { chatIdFor, copyText, pad, prefOn } from './utils';
+import { pageInBackground, showSystem } from './push';
+import { NOTIF_CATEGORY, TOPIC_OF } from './constants';
 import { uploadToDrive } from './upload';
 
 type Theme = 'system' | 'light' | 'dark';
@@ -34,10 +36,10 @@ function useStore() {
   useEffect(() => { document.documentElement.lang = lang === 'kz' ? 'kk' : 'ru'; }, [lang]);
 
   // ── UI ──
-  const [toast, setToast] = useState<{ s: string; k: number } | null>(null);
+  const [toast, setToast] = useState<{ s: string; k: number; onClick?: () => void } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>();
-  const showToast = useCallback((s: string) => {
-    setToast({ s, k: Date.now() }); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 2600);
+  const showToast = useCallback((s: string, onClick?: () => void) => {
+    setToast({ s, k: Date.now(), onClick }); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), onClick ? 5000 : 2600);
   }, []);
   const [tab, setTab] = useState<'home' | 'search' | 'notif' | 'me'>('home');
   const [stack, setStack] = useState<View[]>([]);
@@ -75,8 +77,27 @@ function useStore() {
   const [prizeQueue, setPrizeQueue] = useState<Redemption[]>([]);   // admin: купоны, ждущие выдачи
   const [lightbox, setLightbox] = useState<{ images: string[]; index: number } | null>(null);
   const [loaded, setLoaded] = useState(false);
+
+  // ── уведомления в реальном времени (без Cloud Functions) ──
+  // Источники: те же onSnapshot-подписки (posts / notifications / chats). Показ: тост внутри приложения,
+  // системное уведомление, если вкладка в фоне, и запись в центр уведомлений (локальные события).
+  const [localEvents, setLocalEvents] = useState<Notif[]>([]);
+  const live = useRef({
+    since: 0, users: {} as Record<string, User>, prefs: {} as Partial<NotificationPrefs>, view: { name: 'home' } as View,
+    owned: new Set<string>(), posts: [] as Post[], t: (k: TKey) => k as string, seenChat: {} as Record<string, number>, open: (_url: string) => {},
+  });
+  const alertEvent = (title: string, body: string, url: string, category?: NotifPrefKey, local?: Notif) => {
+    if (category && !prefOn(live.current.prefs, category)) return;
+    if (local) setLocalEvents(l => [local, ...l.filter(x => x.id !== local.id)].slice(0, 50));
+    if (document.visibilityState === 'visible') showToast(title + (body ? ' — ' + body.slice(0, 80) : ''), () => live.current.open(url));
+    if (pageInBackground()) showSystem(title, body.slice(0, 140), url, url);
+  };
+  const tsMs = (v: unknown) => (v && typeof (v as { toMillis?: () => number }).toMillis === 'function' ? (v as { toMillis: () => number }).toMillis() : 0);
+
   useEffect(() => {
     if (!uid || !profileDone) return;
+    live.current.since = Date.now();   // уведомляем только о событиях после запуска приложения
+    live.current.seenChat = {};
     const onErr = (e: FirestoreError) => { console.error(e); if (e.code === 'permission-denied') showToast(I18N[lang].permissionDenied); };
     const est = { serverTimestamps: 'estimate' as const };
     const unsubs = [
@@ -89,13 +110,55 @@ function useStore() {
       onSnapshot(query(collection(db, 'posts'), orderBy('createdAt', 'desc'), limit(FEED_LIMIT)), { includeMetadataChanges: true }, s => {
         setRawPosts(s.docs.map(d => ({ id: d.id, d: d.data(est), pending: d.metadata.hasPendingWrites })));
         setLoaded(true);
+        // новые публикации по темам: только 'added', созданные после запуска и не мной → по notifPrefs
+        s.docChanges().forEach(ch => {
+          if (ch.type !== 'added' || ch.doc.metadata.hasPendingWrites) return;
+          const d = ch.doc.data(est);
+          if (tsMs(d.createdAt) < live.current.since || d.chainOf || d.type === 'repost') return;
+          if (d.authorId === uid || live.current.owned.has(ch.doc.id)) return;
+          const cat = TOPIC_OF[d.type as keyof typeof TOPIC_OF];
+          if (!cat) return;
+          const T = live.current.t;
+          const who = d.anon || !d.authorId ? T('anon') : live.current.users[d.authorId]?.name || T('anon');
+          const title = T('n_topic') + ' · ' + T(('np_' + cat) as TKey);
+          alertEvent(title, who + ': ' + (d.text || ''), '/?p=' + ch.doc.id, cat,
+            { id: 'topic_' + ch.doc.id, type: 'topic', fromId: d.anon ? null : d.authorId, postId: ch.doc.id, payload: { category: cat }, read: false, createdAt: tsMs(d.createdAt), local: true });
+        });
       }, onErr),
-      onSnapshot(query(collection(db, 'notifications'), where('to', '==', uid)),
-        s => setNotifs(s.docs.map(d => DB.notifFrom(d.id, d.data(est))).sort((a, b) => b.createdAt - a.createdAt)), onErr),
+      onSnapshot(query(collection(db, 'notifications'), where('to', '==', uid)), s => {
+        setNotifs(s.docs.map(d => DB.notifFrom(d.id, d.data(est))).sort((a, b) => b.createdAt - a.createdAt));
+        // ответы, упоминания, статусы… — отправитель уже сверил notifPrefs (и rules тоже); здесь только показываем
+        s.docChanges().forEach(ch => {
+          if (ch.type !== 'added') return;
+          const n = DB.notifFrom(ch.doc.id, ch.doc.data(est));
+          if (n.createdAt < live.current.since) return;
+          const T = live.current.t;
+          const from = n.fromId ? live.current.users[n.fromId]?.name : null;
+          const title = from && !['status', 'official', 'ticket', 'points', 'prize'].includes(n.type) ? from + ' ' + T(('n_' + n.type) as TKey) : T(('n_' + n.type) as TKey);
+          const post = n.postId ? live.current.posts.find(p => p.id === n.postId) : undefined;
+          const body = n.payload.points ? '+' + n.payload.points + ' ' + T('points') : n.payload.status ? T(('st_' + n.payload.status) as TKey) : post?.text || '';
+          alertEvent(title, body, n.type === 'prize' ? '/?shop=1' : n.postId ? '/?p=' + n.postId : '/', NOTIF_CATEGORY[n.type] as NotifPrefKey | undefined);
+        });
+      }, onErr),
       onSnapshot(query(collection(db, 'posts_owner'), where('uid', '==', uid)), s => setOwned(new Set(s.docs.map(d => d.id))), onErr),
       // личные диалоги: rules отдают только чаты, где я участник
       onSnapshot(query(collection(db, 'chats'), where('participants', 'array-contains', uid)),
-        s => setChats(s.docs.map(d => DB.chatFrom(d.id, d.data({ serverTimestamps: 'estimate' }), uid)).sort((a, b) => b.lastAt - a.lastAt)), onErr),
+        s => {
+          setChats(s.docs.map(d => DB.chatFrom(d.id, d.data({ serverTimestamps: 'estimate' }), uid)).sort((a, b) => b.lastAt - a.lastAt));
+          // новое входящее сообщение → тост/системное уведомление, если этот диалог сейчас не открыт на экране
+          s.docChanges().forEach(ch => {
+            if (ch.type === 'removed' || ch.doc.metadata.hasPendingWrites) return;
+            const c = DB.chatFrom(ch.doc.id, ch.doc.data({ serverTimestamps: 'estimate' }), uid);
+            if (!c.unread || c.lastSender === uid || c.lastAt < live.current.since || c.lastAt <= (live.current.seenChat[c.id] || 0)) return;
+            live.current.seenChat[c.id] = c.lastAt;
+            const v = live.current.view;
+            const reading = v.name === 'chat' && v.uid === c.other && !pageInBackground();
+            if (reading) return;
+            const name = live.current.users[c.other]?.name || live.current.t('messages');
+            alertEvent(name, c.lastText, '/?chat=' + c.other, 'messages',
+              { id: 'msg_' + c.id + '_' + c.lastAt, type: 'message', fromId: c.other, postId: null, payload: { text: c.lastText, chatWith: c.other }, read: false, createdAt: c.lastAt, local: true });
+          });
+        }, onErr),
       onSnapshot(query(collection(db, 'redemptions'), where('uid', '==', uid)),
         s => setMyCoupons(s.docs.map(d => DB.redemptionFrom(d.id, d.data(est))).sort((a, b) => b.createdAt - a.createdAt)), onErr),
       onSnapshot(query(collectionGroup(db, 'votes'), where('uid', '==', uid)), s => {
@@ -129,7 +192,9 @@ function useStore() {
   }, [uid, profileDone, isAdminRole, prizeRetry]);
   const unreadChats = chats.filter(c => c.unread).length;
   const stats: Stats = useMemo(() => computeStats(posts, now), [posts, now]);
-  const unread = notifications.some(n => !n.read);
+  const allNotifs = useMemo(() => [...localEvents, ...notifications].sort((a, b) => b.createdAt - a.createdAt), [localEvents, notifications]);
+  const unreadCount = allNotifs.filter(n => !n.read).length;
+  const unread = unreadCount > 0;
 
   const fail = (e: unknown, key: TKey = 'permissionDenied') => {
     console.error(e);
@@ -240,7 +305,11 @@ function useStore() {
       DB.follow(me.id, target, on).catch(e => fail(e));
       showToast(on ? t('followed') + ': ' + (users[target]?.name || '') : t('unfollowed'));
     },
-    markRead: () => { const ids = notifications.filter(n => !n.read).map(n => n.id); if (ids.length) DB.markRead(ids).catch(() => {}); },
+    markRead: () => {
+      setLocalEvents(l => (l.some(n => !n.read) ? l.map(n => ({ ...n, read: true })) : l));
+      const ids = notifications.filter(n => !n.read).map(n => n.id); if (ids.length) DB.markRead(ids).catch(() => {});
+    },
+    setNotifPref: (key: NotifPrefKey, value: boolean) => { if (me) DB.setNotifPref(me.id, key, value).catch(e => fail(e)); },
     verifyTeacher: (id: string, v: boolean) => DB.verifyTeacher(id, v).then(() => showToast(t('verifiedOk'))).catch(e => fail(e)),
   };
 
@@ -275,11 +344,19 @@ function useStore() {
     chat: (other: string) => go.push({ name: 'chat', uid: other }),
     shop: () => go.push({ name: 'shop' }),
   };
+  /** url из уведомления: /?p=<post> · /?chat=<uid> · /?shop=1 */
+  const openUrl = (url: string) => {
+    const q = new URLSearchParams(url.split('?')[1] || '');
+    const p = q.get('p'), c = q.get('chat');
+    if (p) go.post(p); else if (c) go.chat(c); else if (q.get('shop')) go.shop(); else go.tab('notif');
+  };
+  Object.assign(live.current, { users, prefs: users[uid || '']?.notifPrefs || {}, view, owned, posts: serverPosts, t, open: openUrl });
+  DB.setUsersSource(() => live.current.users);
 
   return {
     firebaseConfigured, authUser, authReady, privReady, profileDone, loaded, demoBusy,
     lang, setLang, theme, setTheme, t, now,
-    me, role, users, posts, notifications, stats, unread, admins, chats, unreadChats, myCoupons, prizeQueue, lightbox, setLightbox,
+    openUrl, me, role, users, posts, notifications: allNotifs, stats, unread, unreadCount, admins, chats, unreadChats, myCoupons, prizeQueue, lightbox, setLightbox,
     tab, stack, view, vkey, feedTab, setFeedTab, query: query_, setQuery, sheet, setSheet, composer, setComposer, toast,
     act, go,
   };

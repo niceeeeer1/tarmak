@@ -86,3 +86,9 @@ export function couponCode() {
   return `TRM-${r(4)}-${r(4)}`;
 }
 export const chatIdFor = (a: string, b: string) => (a < b ? `${a}_${b}` : `${b}_${a}`);
+
+/** Категория уведомлений включена, если пользователь явно не выключил её (нет поля / нет ключа → true) */
+export const prefOn = (prefs: Partial<Record<string, boolean>> | undefined | null, key: string) => prefs?.[key] !== false;
+/** @username из текста (без дублей, до 10) */
+export const extractMentions = (text: string) =>
+  Array.from(new Set(Array.from(text.matchAll(/(?:^|[^\w@.])@([a-z0-9_.]{3,30})/gi), m => m[1].toLowerCase().replace(/\.+$/, '')))).slice(0, 10);

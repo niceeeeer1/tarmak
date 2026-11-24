@@ -1,5 +1,5 @@
 'use client';
-import { Award, Check, ChevronLeft, EyeOff, Gift, Globe, LayoutDashboard, Lock, Menu, MessageCircle, Star } from 'lucide-react';
+import { Award, Bell, Check, ChevronLeft, EyeOff, Gift, Globe, LayoutDashboard, Lock, Menu, MessageCircle, Star } from 'lucide-react';
 import { useState } from 'react';
 import { DEMO, LEVELS, SOLVED } from '@/lib/constants';
 import type { TKey } from '@/lib/i18n';
@@ -7,6 +7,7 @@ import { useApp, useComments } from '@/lib/store';
 import type { User } from '@/lib/types';
 import { levelOf } from '@/lib/utils';
 import { DemoRoleSwitch } from './AuthScreen';
+import { NotificationPrefsPanel } from './NotificationSettings';
 import { EditProfileModal } from './EditProfileModal';
 import { CommentCard, FeedItem } from './PostCard';
 import { Avatar, VBadge } from './ui';
@@ -115,6 +116,13 @@ export function Profile({ uid }: { uid: string }) {
           <span className="lbl" style={{ margin: '0 0 2px', width: '100%' }}>{t('achievements')}</span>
           {ach.map(a => <span key={a.key} className={'chip' + (a.on ? ' ok' : '')}>{a.on ? <Award size={12} /> : <Lock size={11} />}{t(a.key)}</span>)}
         </div>
+
+        {isMe && (
+          <details className="perks nprefs" style={{ marginTop: 12 }}>
+            <summary><Bell size={14} style={{ display: 'inline', verticalAlign: '-2px', marginRight: 6 }} />{t('notifSettings')}</summary>
+            <NotificationPrefsPanel />
+          </details>
+        )}
 
         {/* Демо-роли — ТОЛЬКО здесь, в своём профиле, при NEXT_PUBLIC_DEMO_MODE=true */}
         {isMe && DEMO && (

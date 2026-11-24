@@ -324,3 +324,28 @@ test('удаление ответа к уже удалённому посту (�
   });
   await assertSucceeds(deleteDoc(doc(as('s1'), 'comments/orphan')));
 });
+
+test('настройки уведомлений: только свои, только 8 булевых ключей', async () => {
+  await register(as('s1'), 's1'); await register(as('s2'), 's2');
+  const db = as('s1');
+  await assertSucceeds(updateDoc(doc(db, 'users_public/s1'), { notifPrefs: { replies: false, news: false } }));
+  await assertSucceeds(updateDoc(doc(db, 'users_public/s1'), { 'notifPrefs.lost': true }));
+  await assertFails(updateDoc(doc(db, 'users_public/s1'), { 'notifPrefs.spam': true }));          // неизвестная категория
+  await assertFails(updateDoc(doc(db, 'users_public/s1'), { 'notifPrefs.news': 'yes' }));         // не boolean
+  await assertFails(updateDoc(doc(as('s2'), 'users_public/s1'), { 'notifPrefs.replies': true })); // чужие настройки
+});
+
+test('уведомления уважают настройки получателя', async () => {
+  await register(as('s1'), 's1'); await register(as('s2'), 's2');
+  const n = (id, o) => setDoc(doc(as('s2'), 'notifications', id), { to: 's1', type: 'reply', fromId: 's2', postId: null, payload: {}, read: false, createdAt: serverTimestamp(), ...o });
+  const na = (id, o) => setDoc(doc(as('admin1', 'admin@x.kz'), 'notifications', id), { to: 's1', type: 'status', fromId: 'admin1', postId: null, payload: {}, read: false, createdAt: serverTimestamp(), ...o });
+  // по умолчанию (поля notifPrefs нет) — всё включено
+  await assertSucceeds(n('r1')); await assertSucceeds(n('m1', { type: 'mention' })); await assertSucceeds(na('st1'));
+  await updateDoc(doc(as('s1'), 'users_public/s1'), { notifPrefs: { replies: false, mentions: false, status: false } });
+  await assertFails(n('r2'));
+  await assertFails(n('m2', { type: 'mention' }));
+  await assertFails(na('st2')); await assertFails(na('pt2', { type: 'points', payload: { points: 10 } }));
+  await assertSucceeds(n('l1', { type: 'like' }));                                                 // лайки не входят в категории
+  await updateDoc(doc(as('s1'), 'users_public/s1'), { 'notifPrefs.mentions': true });
+  await assertSucceeds(n('m3', { type: 'mention' }));
+});

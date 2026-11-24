@@ -1,6 +1,6 @@
 // Тармақ service worker: офлайн-оболочка приложения.
 // Запросы к Apps Script (script.google.com) и фото с Диска не кэшируются — данные всегда свежие.
-const CACHE = 'tarmak-shell-v1';
+const CACHE = 'tarmak-shell-v2';
 const SHELL = ['/', '/manifest.json', '/icons/icon-192.png'];
 
 self.addEventListener('install', e => {
@@ -21,4 +21,15 @@ self.addEventListener('fetch', e => {
     // cache-first для неизменяемых файлов сборки
     e.respondWith(caches.match(e.request).then(hit => hit || fetch(e.request).then(r => { const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return r; })));
   }
+});
+
+// Клик по системному уведомлению: фокусируем открытую вкладку/PWA и просим её открыть пост/диалог, иначе открываем новое окно
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || '/';
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+    const client = list.find(c => new URL(c.url).origin === self.location.origin);
+    if (client) { client.postMessage({ type: 'tarmak-open', url }); return client.focus(); }
+    return self.clients.openWindow(url);
+  }));
 });

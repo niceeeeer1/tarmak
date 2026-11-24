@@ -9,10 +9,10 @@ import {
   arrayRemove, arrayUnion, collection, deleteDoc, doc, getDoc, increment, runTransaction, serverTimestamp,
   Timestamp, updateDoc, writeBatch, addDoc, type DocumentData, type DocumentReference, type Transaction, type WriteBatch,
 } from 'firebase/firestore';
-import { DEMO_PROFILES, POINTS, SHOP_ITEMS, SOLVED } from './constants';
+import { DEMO_PROFILES, NOTIF_CATEGORY, POINTS, SHOP_ITEMS, SOLVED } from './constants';
 import { db } from './firebase';
-import type { Chat, Comment, Draft, Message, Redemption, ShopItemId, Notif, NotifType, PollView, Post, PrivateProfile, Role, TicketStatus, User } from './types';
-import { chatIdFor, couponCode, handleBase, HANDLE_RE, roomKey } from './utils';
+import type { Chat, Comment, Draft, Message, NotifPrefKey, Redemption, ShopItemId, Notif, NotifType, PollView, Post, PrivateProfile, Role, TicketStatus, User } from './types';
+import { chatIdFor, couponCode, extractMentions, handleBase, HANDLE_RE, prefOn, roomKey } from './utils';
 
 const ms = (v: unknown): number | null =>
   v instanceof Timestamp ? v.toMillis() : typeof v === 'number' ? v : v ? new Date(v as string).getTime() : null;
@@ -22,7 +22,7 @@ export function userFrom(id: string, d: DocumentData): User {
   return {
     id, name: d.name || '—', handle: d.handle || id.slice(0, 8), role: d.role || 'student', group: d.group || '',
     avatar: d.avatarUrl || d.avatar || '', bio: d.bio || '', hue: d.hue ?? 200, points: d.points || 0, verified: !!d.verified,
-    following: d.following || [], followers: 0,
+    following: d.following || [], followers: 0, notifPrefs: d.notifPrefs || {},
   };
 }
 
@@ -57,8 +57,15 @@ export function notifFrom(id: string, d: DocumentData): Notif {
 }
 
 // ───────── уведомления ─────────
+// Справочник пользователей из realtime-подписки store (users_public): настройки получателя и @handle → uid
+let usersRef: () => Record<string, User> = () => ({});
+export const setUsersSource = (fn: () => Record<string, User>) => { usersRef = fn; };
+
+/** Создаёт уведомление, только если у получателя включена категория (то же проверяют firestore.rules) */
 export function notify(to: string | null | undefined, type: NotifType, fromId: string | null, postId: string | null, payload: Record<string, unknown> = {}) {
   if (!to || to === fromId) return;
+  const cat = NOTIF_CATEGORY[type];
+  if (cat && !prefOn(usersRef()[to]?.notifPrefs, cat)) return;
   addDoc(collection(db, 'notifications'), { to, type, fromId, postId, payload, read: false, createdAt: serverTimestamp() }).catch(() => {});
 }
 
@@ -149,6 +156,8 @@ export async function publishDraft(uid: string, dr: Draft, admins: string[]): Pr
     writeAll(wrapBatch(b), null);
     await b.commit();
   }
+  // @упоминания во всех частях ветки; автор анонимного поста не раскрывается (fromId = null)
+  notifyMentions(segs.map(s => s.text).join('\n'), uid, dr.anon ? null : uid, headId);
   return { headId, num };
 }
 
@@ -199,7 +208,23 @@ export async function addComment(uid: string, postId: string, parentId: string |
   b.update(doc(db, 'posts', postId), { replyCount: increment(1) });
   await b.commit();
   notify(notifyTo, 'reply', uid, postId);
+  notifyMentions(text, uid, uid, postId, notifyTo);
 }
+
+/** @username → уведомление «mention» найденному пользователю (кроме автора и того, кому уже ушёл «reply») */
+export function notifyMentions(text: string, authorUid: string, fromId: string | null, postId: string, skip?: string | null) {
+  const handles = extractMentions(text);
+  if (!handles.length) return;
+  const byHandle = new Map(Object.values(usersRef()).map(u => [u.handle.toLowerCase(), u.id]));
+  handles.forEach(h => {
+    const to = byHandle.get(h);
+    if (to && to !== authorUid && to !== skip) notify(to, 'mention', fromId, postId);
+  });
+}
+
+/** Переключатель категории уведомлений (users_public.notifPrefs.<key>) */
+export const setNotifPref = (uid: string, key: NotifPrefKey, value: boolean) =>
+  updateDoc(doc(db, 'users_public', uid), { ['notifPrefs.' + key]: value });
 
 /**
  * Удаление ответа: документ comments/{id} и replyCount −1 в посте — одним batch.
